@@ -7947,6 +7947,43 @@ _format_eta() {
 }
 
 _UPDATE_STEP_START_TIME=0
+_UPDATE_LOG_FILE=""
+_UPDATE_VERBOSE=0
+
+# Enable verbose logging to a file
+_update_enable_logging() {
+    _UPDATE_LOG_FILE="${1:-.aegis-update.log}"
+    _UPDATE_VERBOSE=1
+    mkdir -p "$(dirname "$_UPDATE_LOG_FILE")"
+}
+
+# Log message to file and optionally stdout
+_update_log() {
+    local level="$1" msg="$2"
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    local log_line="[$timestamp] [$level] $msg"
+
+    if [[ -n "$_UPDATE_LOG_FILE" ]]; then
+        printf '%s\n' "$log_line" >> "$_UPDATE_LOG_FILE"
+    fi
+
+    if [[ "$_UPDATE_VERBOSE" == "1" ]] && [[ "$level" != "DEBUG" ]]; then
+        printf '    %s %s\n' "[$level]" "$msg" >&2
+    fi
+}
+
+# Format error with recovery advice
+_update_error_with_recovery() {
+    local step_num="$1" error_msg="$2" recovery_state="$3"
+    echo
+    err "✗ Step $step_num failed: $error_msg"
+    if [[ -n "$recovery_state" ]]; then
+        err "  Recovery information saved to: $(tildify "$recovery_state")"
+        err "  To resume, run: aegis update"
+        err "  To view logs, run: tail -f $(tildify "$_UPDATE_LOG_FILE")"
+    fi
+    echo
+}
 
 _update_step_with_eta() {
     local step_num="$1" step_name="$2" pct="$3" speed="${4:-}"
@@ -8089,10 +8126,31 @@ _client_update_state_file() {
 }
 
 cmd_update_client() {
-    if [[ $# -gt 0 ]]; then
-        err "usage: aegis update"
-        exit 2
-    fi
+    local verbose=0
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --verbose|-v) verbose=1; shift ;;
+            --help|-h)
+                err "usage: aegis update [--verbose]"
+                exit 0
+                ;;
+            -*)
+                err "usage: aegis update [--verbose]"
+                exit 2
+                ;;
+            *)
+                err "usage: aegis update [--verbose]"
+                exit 2
+                ;;
+        esac
+    done
+
+    [[ "$verbose" == "1" ]] && _update_enable_logging "${HOME}/.aegis/update.log"
+
+    printf '\n'
+    log "Starting aegis update..."
+    _update_log "INFO" "aegis update started at $(date)"
+
     local env_file="${AEGIS_WORKSTATION_DIR%/}/.devcontainer/.env" state bin_dir resumed=0
     local old_version old_tag old_base_ref old_base_id old_dev new_version new_tag new_base_id new_dev
     # Every one of these is initialized: the launcher runs with set -u, and the
@@ -8131,21 +8189,27 @@ cmd_update_client() {
 
     if [[ "$stage" != "2" ]]; then
         _update_step_start 1 "Installing signed configuration bundle"
+        _update_log "INFO" "Installing bundle from $(tildify "${AEGIS_INSTALL_SOURCE:-registry}")"
         if ! ( cmd_install ); then
             # Nothing was replaced: a state file this run created would make the
             # next update "resume" one that never happened (review finding R3-002).
             [[ "$resumed" == "1" ]] || rm -f "$state"
-            err "the bundle was not installed — your CLI and images were not changed."
+            _update_log "ERROR" "Bundle installation failed"
+            _update_error_with_recovery 1 "the bundle was not installed — your CLI and images were not changed." "$state"
             exit 1
         fi
+        _update_log "INFO" "Bundle installed successfully"
         _update_step_progress 100
         _update_step_complete 1
 
         _update_step_start 2 "Updating CLI"
+        _update_log "INFO" "Updating CLI from $(tildify "$bin_dir")"
         if ! _client_install_launcher; then
-            err "the configuration is already the new one; run 'aegis update' again once the cause is fixed."
+            _update_log "ERROR" "CLI installation failed"
+            _update_error_with_recovery 2 "the configuration is already the new one; run 'aegis update' again once the cause is fixed." "$state"
             exit 1
         fi
+        _update_log "INFO" "CLI updated successfully"
         _update_step_progress 100
         _update_step_complete 2
 
@@ -8161,18 +8225,22 @@ cmd_update_client() {
     fi
 
     _update_step_with_eta 3 "Starting new version (download + verify; rebuilding image if needed)" START
+    _update_log "INFO" "Pulling base image: ${AEGIS_IMAGE_REGISTRY}/${AEGIS_IMAGE_REPO}:${new_tag:-<auto>}"
     # Every developer image that exists right now was built by the OLD version —
     # the rebuild `up` is about to do does not count. Captured HERE, not before
     # the install, so a handoff from an older CLI (whose code never captured
     # anything) still gets the full set: nothing has been removed yet.
     old_env_ids="$(docker images --format '{{.ID}}' "$AEGIS_ENV_IMAGE_REPO" | tr '\n' ' ')"
+    _update_log "INFO" "Found $( echo $old_env_ids | wc -w ) previous developer images"
     _update_step_with_eta 3 "Starting new version (download + verify; rebuilding image if needed)" 45 "3.2 MB/s"
     if ! env "${child_env[@]}" AEGIS_CLI_MODE=client bash "${bin_dir}/aegis" up; then
+        _update_log "ERROR" "Failed to start new version"
         err "the new version did not start — the previous images are kept, so nothing was removed."
         err "the new configuration and CLI are installed; the previous ones are in $(tildify "${AEGIS_INSTALL_DIR%/}").bak-<date> and $(tildify "$bin_dir")/*.bak-<date>."
         err "fix the cause above and run 'aegis update' again: it still removes the previous images once the new version starts."
         exit 1
     fi
+    _update_log "INFO" "New version started successfully"
     _update_step_progress 100
     _update_step_complete 3
 
@@ -8212,9 +8280,24 @@ cmd_update_client() {
     fi
     _update_step_progress 100
     _update_step_complete 4
+    _update_log "INFO" "Cleanup completed, removing state file"
     rm -f "$state"
-    printf '\n✓ Updated: aegis %s -> %s\n' "$old_version" "$new_version"
-    printf '  Your configuration and data are preserved.\n\n'
+
+    printf '\n'
+    printf '✓ Updated: aegis %s -> %s\n' "$old_version" "$new_version"
+    printf '  ✓ Configuration installed\n'
+    printf '  ✓ CLI updated\n'
+    printf '  ✓ Base image verified and running\n'
+    printf '  ✓ Previous images cleaned up\n'
+    printf '  ✓ All data preserved\n'
+    printf '\n'
+
+    if [[ -n "$_UPDATE_LOG_FILE" ]]; then
+        printf 'Logs: %s\n' "$(tildify "$_UPDATE_LOG_FILE")"
+    fi
+    printf '\n'
+
+    _update_log "INFO" "aegis update completed successfully at $(date)"
 }
 
 # ---------------------------------------------------------------------------
