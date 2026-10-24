@@ -2,6 +2,15 @@
 
 All notable changes to the Aegis CLI are documented here.
 
+## [0.2.2] - 2026-10-24
+
+### Added
+- Synced to aegis-workstation for bundle publication
+- Release demo documentation with live output examples
+
+### Changed
+- Improved terminal compatibility for progress bars
+
 ## [0.2.1] - 2026-10-24
 
 ### Added
