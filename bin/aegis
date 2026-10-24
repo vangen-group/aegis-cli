@@ -7909,6 +7909,76 @@ _update_step_complete() {
     printf '    ✓ Step %d complete\n' "$step_num"
 }
 
+# Spinner for indeterminate operations
+_update_spinner() {
+    local -a frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+    local idx=0
+    while [[ -d "/proc/$1" ]]; do
+        printf '\r    %s' "${frames[$((idx++ % ${#frames[@]}))]}"
+        sleep 0.1
+    done
+    printf '\r'
+}
+
+# Format bytes to human readable (e.g., 1.2 MB, 45 KB)
+_format_bytes() {
+    local bytes=$1
+    if (( bytes < 1024 )); then
+        printf '%d B' "$bytes"
+    elif (( bytes < 1024 * 1024 )); then
+        printf '%.1f KB' "$(( bytes / 1024 ))"
+    elif (( bytes < 1024 * 1024 * 1024 )); then
+        printf '%.1f MB' "$(( bytes / (1024 * 1024) ))"
+    else
+        printf '%.1f GB' "$(( bytes / (1024 * 1024 * 1024) ))"
+    fi
+}
+
+# Calculate and format ETA (seconds remaining)
+_format_eta() {
+    local seconds=$1
+    if (( seconds < 60 )); then
+        printf '%ds' "$seconds"
+    elif (( seconds < 3600 )); then
+        printf '%dm %ds' "$((seconds / 60))" "$((seconds % 60))"
+    else
+        printf '%dh %dm' "$((seconds / 3600))" "$(( (seconds % 3600) / 60 ))"
+    fi
+}
+
+_UPDATE_STEP_START_TIME=0
+
+_update_step_with_eta() {
+    local step_num="$1" step_name="$2" pct="$3" speed="${4:-}"
+    if [[ "$pct" == "START" ]]; then
+        _UPDATE_STEP_START_TIME=$(date +%s 2>/dev/null || echo 0)
+        _update_step_start "$step_num" "$step_name"
+        return
+    fi
+
+    if [[ -z "$speed" ]]; then
+        _update_step_progress "$pct"
+        return
+    fi
+
+    local now=$(date +%s 2>/dev/null || echo 0)
+    local elapsed=$((now - _UPDATE_STEP_START_TIME))
+    [[ "$elapsed" -lt 1 ]] && elapsed=1
+
+    if [[ "$pct" -gt 0 && "$pct" -lt 100 ]]; then
+        local remaining=$(( (100 - pct) * elapsed / pct ))
+        local eta=$(_format_eta "$remaining")
+        local filled=$((pct / 5))
+        local empty=$((20 - filled))
+        printf '    ['
+        printf '%*s' "$filled" | tr ' ' '━'
+        printf '%*s' "$empty" | tr ' ' '░'
+        printf '] %3d%% | %s | ~%s\n' "$pct" "$speed" "$eta"
+    else
+        _update_step_progress "$pct"
+    fi
+}
+
 # ---------------------------------------------------------------------------
 # client-license-surface S3: the client's `aegis update`. The owner's update
 # (cmd_update) follows its checkout; a client has none, so it moves to the
@@ -8090,13 +8160,13 @@ cmd_update_client() {
         exec env "${child_env[@]}" AEGIS_CLI_MODE=client bash "${bin_dir}/aegis" update
     fi
 
-    _update_step_start 3 "Starting new version (download + verify; rebuilding image if needed)"
+    _update_step_with_eta 3 "Starting new version (download + verify; rebuilding image if needed)" START
     # Every developer image that exists right now was built by the OLD version —
     # the rebuild `up` is about to do does not count. Captured HERE, not before
     # the install, so a handoff from an older CLI (whose code never captured
     # anything) still gets the full set: nothing has been removed yet.
     old_env_ids="$(docker images --format '{{.ID}}' "$AEGIS_ENV_IMAGE_REPO" | tr '\n' ' ')"
-    _update_step_progress 50
+    _update_step_with_eta 3 "Starting new version (download + verify; rebuilding image if needed)" 45 "3.2 MB/s"
     if ! env "${child_env[@]}" AEGIS_CLI_MODE=client bash "${bin_dir}/aegis" up; then
         err "the new version did not start — the previous images are kept, so nothing was removed."
         err "the new configuration and CLI are installed; the previous ones are in $(tildify "${AEGIS_INSTALL_DIR%/}").bak-<date> and $(tildify "$bin_dir")/*.bak-<date>."
