@@ -1,4 +1,8 @@
-bin/
+# Compiled binaries and build artifacts (but not source scripts)
+bin/*
+!bin/aegis
+!bin/aegis.cmd
+!bin/aegis.ps1
 dist/
 *.exe
 *.dll
