@@ -7895,12 +7895,34 @@ _update_step_start() {
 }
 
 _update_step_progress() {
-    local pct="$1" symbol="${2:-━}"
+    local pct="$1"
     local filled=$((pct / 5))
     local empty=$((20 - filled))
+
+    # Use ASCII fallback on limited terminals (Windows PowerShell, basic shells)
+    local use_unicode=1
+    if [[ -n "$TERM" && "$TERM" == "dumb" ]] || [[ "${OSTYPE}" == "msys" ]]; then
+        use_unicode=0
+    fi
+
+    # Detect terminal capabilities - try to write Unicode and see if it works
+    if [[ "$use_unicode" == "1" ]]; then
+        # Try a test write; if it fails, fall back to ASCII
+        if ! (echo -ne "█" >/dev/null 2>&1); then
+            use_unicode=0
+        fi
+    fi
+
     printf '    ['
-    printf '%*s' "$filled" | tr ' ' "$symbol"
-    printf '%*s' "$empty" | tr ' ' '░'
+    if [[ "$use_unicode" == "1" ]]; then
+        # Unicode: solid block (█) and light shade (░)
+        printf '%*s' "$filled" | tr ' ' '█'
+        printf '%*s' "$empty" | tr ' ' '░'
+    else
+        # ASCII fallback: equals (=) and dash (-)
+        printf '%*s' "$filled" | tr ' ' '='
+        printf '%*s' "$empty" | tr ' ' '-'
+    fi
     printf '] %3d%%\n' "$pct"
 }
 

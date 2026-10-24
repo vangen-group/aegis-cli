@@ -2,6 +2,13 @@
 
 All notable changes to the Aegis CLI are documented here.
 
+## [0.2.3] - 2026-10-24
+
+### Fixed
+- Progress bars now use ASCII fallback (=/-) on Windows PowerShell and limited terminals
+- Improved terminal capability detection for Unicode support
+- Better rendering on terminals that don't support box-drawing characters
+
 ## [0.2.2] - 2026-10-24
 
 ### Added
