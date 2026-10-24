@@ -2,6 +2,20 @@
 
 All notable changes to the Aegis CLI are documented here.
 
+## [0.2.1] - 2026-10-24
+
+### Added
+- Integration documentation with aegis-workstation sync
+- `docs/INTEGRATION.md` with complete workflow guide
+
+### Changed
+- Improved ETA calculation edge case handling
+- Better error messages with recovery context
+
+### Fixed
+- ETA calculation when elapsed time is less than 1 second
+- Spinner animation compatibility on different terminals
+
 ## [0.2.0] - 2026-10-24
 
 ### Added
