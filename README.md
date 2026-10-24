@@ -1,42 +1,40 @@
 # Aegis CLI
 
-A modern, secure CLI for managing Aegis workstations and sandboxes.
+The command-line interface for Aegis Workstation — a hermetic dev environment for supervised AI agents.
 
-## Features
+## Structure
 
-- 🚀 Fast, efficient command execution
-- 📊 Beautiful progress bars with Google-style UX
-- 🔒 Secure bundle verification
-- 🎨 Colorized output with clear feedback
-- ⚡ ETA and speed indicators
-
-## Building
-
-```bash
-make build
+```
+aegis-cli/
+├── bin/
+│   └── aegis              # Main CLI script (bash)
+├── scripts/               # Helper scripts
+├── docs/                  # Documentation
+└── tests/                 # Test suites
 ```
 
-## Running
+## Usage
 
 ```bash
 ./bin/aegis --help
-./bin/aegis update
-./bin/aegis version
+./bin/aegis update        # Update to latest version
+./bin/aegis version       # Show version
 ```
 
-## Development
+## Building
+
+The CLI is bash-based and requires no compilation. Just copy `bin/aegis` to your PATH:
 
 ```bash
-make dev      # Build for development
-make test     # Run tests
-make clean    # Clean build artifacts
+cp bin/aegis ~/bin/
+chmod +x ~/bin/aegis
 ```
 
-## Architecture
+## Roadmap
 
-- `cmd/` - CLI commands
-- `internal/update/` - Update logic
-- `main.go` - Entry point
+- [ ] Migrate update command UX to modern progress bars
+- [ ] Consider Go rewrite for performance (future)
+- [ ] Bubble Tea TUI integration (future)
 
 ## License
 
