@@ -2,7 +2,14 @@
 
 All notable changes to the Aegis CLI are documented here.
 
-## [0.2.4] - 2026-10-29
+## [0.2.5] - 2026-10-29
+
+### Fixed
+- v0.2.4's release tarball was broken and never consumed by anyone: it packed `bin/aegis` etc. with a `bin/` prefix inside the archive, so `tar -xzf ... -C ~/bin` (the documented extraction command, docs/11-aegis-cli.md §2.0 in aegis-workstation) would have landed `~/bin/bin/aegis` instead of `~/bin/aegis`. The archive is now flat at the root, matching aegis-workstation's build-client-cli.sh shape.
+- Added `config/license-keys.json` (public license-verification keys) to the release tarball as `aegis-license-keys.json`. Without it, `aegis account activate` on a fresh standalone install (no aegis-workstation configuration tree yet) had no key to verify the license against — bin/aegis's own fallback (`SCRIPT_DIR/aegis-license-keys.json`) would have found nothing.
+- v0.2.4's tag and GitHub Release were deleted (never downloaded by anyone, broken on arrival) rather than left in the release history.
+
+## [0.2.4] - 2026-10-29 (deleted, see 0.2.5)
 
 ### Added
 - `bin/aegis-license.js`, `bin/aegis-activate.js`, `bin/aegis-license-api.js`, `bin/aegis-telemetry.js`, `bin/aegis.cmd`, `bin/aegis.ps1` — the rest of the client CLI's files, previously only shipped from aegis-workstation's bundle. First step of the standalone-distribution migration (this repo becomes the single source of truth for the CLI).
