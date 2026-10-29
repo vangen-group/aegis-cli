@@ -2,6 +2,11 @@
 
 All notable changes to the Aegis CLI are documented here.
 
+## [0.2.7] - 2026-10-29
+
+### Fixed
+- `install.sh` refused to run under Git Bash on Windows (`uname -s` reports `MINGW64_NT-...`), telling the user to use WSL instead — even though Git Bash is the exact shell `aegis.cmd` itself launches (`bash.exe`) for every Windows client. Added `MINGW*`/`MSYS*`/`CYGWIN*` detection mapping to a native `cosign-windows-amd64.exe` (pinned checksum from cosign v3.1.3's own `cosign_checksums.txt`) — no WSL detour needed, since Git Bash runs real Windows processes directly.
+
 ## [0.2.5] - 2026-10-29
 
 ### Fixed

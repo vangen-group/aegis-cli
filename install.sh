@@ -30,18 +30,28 @@ die() { printf 'aegis-cli install: ERROR: %s\n' "$*" >&2; exit 1; }
 #        portable bash/node script, no per-platform build needed). ----------
 os="$(uname -s)"
 arch="$(uname -m)"
+cosign_ext=""
 case "$os" in
     Linux) cosign_os=linux ;;
     Darwin) cosign_os=darwin ;;
-    *) die "unsupported OS: $os (this installer supports Linux and macOS; on Windows, use Git Bash inside WSL, or run this from inside the Aegis Workstation container)" ;;
+    # Git Bash (the shell aegis.cmd itself launches via bash.exe) reports
+    # uname -s as "MINGW64_NT-<version>"; MSYS2 and Cygwin report their own
+    # MSYS_NT-*/CYGWIN_NT-* prefixes. All three are real Windows processes,
+    # not a VM like WSL, so a native cosign-windows-amd64.exe runs directly —
+    # no WSL detour needed, despite what this installer used to claim.
+    MINGW*|MSYS*|CYGWIN*) cosign_os=windows; cosign_ext=".exe" ;;
+    *) die "unsupported OS: $os (this installer supports Linux, macOS, and Windows via Git Bash)" ;;
 esac
 case "$arch" in
     x86_64|amd64) cosign_arch=amd64 ;;
-    arm64|aarch64) cosign_arch=arm64 ;;
+    arm64|aarch64)
+        [[ "$cosign_os" == "windows" ]] && die "unsupported architecture: $arch (cosign does not publish a windows-arm64 build)"
+        cosign_arch=arm64
+        ;;
     *) die "unsupported architecture: $arch" ;;
 esac
 
-# Pinned per-platform cosign-<os>-<arch> binary checksums, from cosign
+# Pinned per-platform cosign-<os>-<arch>[.exe] binary checksums, from cosign
 # v3.1.3's own published cosign_checksums.txt (verified against that file
 # directly, not assumed).
 cosign_sha256=""
@@ -50,6 +60,7 @@ case "${cosign_os}-${cosign_arch}" in
     linux-arm64) cosign_sha256="c5d324e091826b0d7a78eb16fef316450b4eb9aaec045611c08ba06f5e73220a" ;;
     darwin-amd64) cosign_sha256="2347488e5d5b25336644024dfeca5601b190e91197a71a917bda44744aff106c" ;;
     darwin-arm64) cosign_sha256="5cf948c2f4dfe59687bdd0b8523709067383e03982cc543475c8a7dc70e92a76" ;;
+    windows-amd64) cosign_sha256="9fe59be0eca1271873ce019061335eb1ac419b7059202e797828467ddabe33be" ;;
     *) die "no pinned cosign checksum for ${cosign_os}-${cosign_arch}" ;;
 esac
 
@@ -65,13 +76,13 @@ if command -v cosign >/dev/null 2>&1 && [[ "$(cosign version 2>/dev/null | sed -
     log "using cosign ${COSIGN_VERSION} already on PATH"
 else
     log "downloading cosign ${COSIGN_VERSION} (${cosign_os}-${cosign_arch}, checksum-verified)"
-    curl -fsSL --output "${WORK}/cosign" \
-        "https://github.com/sigstore/cosign/releases/download/${COSIGN_VERSION}/cosign-${cosign_os}-${cosign_arch}" \
+    curl -fsSL --output "${WORK}/cosign${cosign_ext}" \
+        "https://github.com/sigstore/cosign/releases/download/${COSIGN_VERSION}/cosign-${cosign_os}-${cosign_arch}${cosign_ext}" \
         || die "could not download cosign"
-    echo "${cosign_sha256}  ${WORK}/cosign" | sha256sum --check --strict --status \
+    echo "${cosign_sha256}  ${WORK}/cosign${cosign_ext}" | sha256sum --check --strict --status \
         || die "cosign checksum did not match the pinned value — refusing to continue"
-    chmod +x "${WORK}/cosign"
-    cosign_bin="${WORK}/cosign"
+    chmod +x "${WORK}/cosign${cosign_ext}"
+    cosign_bin="${WORK}/cosign${cosign_ext}"
 fi
 
 # --- 3. Resolve the release tag. ---------------------------------------------
