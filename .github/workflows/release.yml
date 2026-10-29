@@ -1,0 +1,98 @@
+name: Release
+
+# Tag-triggered: push a `vX.Y.Z` tag to publish. workflow_dispatch exists only
+# to re-sign an already-tagged release (same digest, fresh signature) if a
+# signing run ever needs retrying without re-tagging.
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to re-sign and re-publish (vX.Y.Z)'
+        required: true
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
+      - name: Resolve the version from the tag
+        id: version
+        run: |
+          set -eu
+          tag="${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"
+          case "$tag" in
+            v*) : ;;
+            *) echo "tag must start with v (got: $tag)" >&2; exit 1 ;;
+          esac
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+
+      # Same pinned release the client verifies against (bin/aegis's
+      # AEGIS_COSIGN_IMAGE) — a signer and verifier on different cosign
+      # versions is exactly the "no signatures found" incident this
+      # repository's sibling (aegis-workstation) hit with editor-v1 on
+      # 2026-10-27. Pin BOTH ends to the same version on purpose.
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: 'v3.1.3'
+
+      - name: Build the release tarball
+        run: bash scripts/build-release-tarball.sh dist/aegis-cli.tar.gz
+
+      - name: Checksum the tarball
+        run: |
+          cd dist
+          sha256sum aegis-cli.tar.gz > aegis-cli.tar.gz.sha256
+          cat aegis-cli.tar.gz.sha256
+
+      # Keyless: the certificate names THIS workflow run, so the installer's
+      # verify step needs no key of ours — only the identity and issuer.
+      # --bundle produces one file carrying the signature, the certificate
+      # and the transparency log entry together — the exact shape
+      # `cosign verify-blob --bundle` expects on the installer side.
+      - name: Sign the tarball (cosign, keyless)
+        run: |
+          set -eu
+          cosign sign-blob --yes \
+            --bundle dist/aegis-cli.tar.gz.cosign.bundle \
+            dist/aegis-cli.tar.gz
+
+      - name: Verify the signature the way the installer will
+        run: |
+          set -eu
+          cosign verify-blob \
+            --bundle dist/aegis-cli.tar.gz.cosign.bundle \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            --certificate-identity-regexp "^https://github.com/${GITHUB_REPOSITORY}/" \
+            dist/aegis-cli.tar.gz
+
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          tag="${{ steps.version.outputs.tag }}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" \
+              dist/aegis-cli.tar.gz \
+              dist/aegis-cli.tar.gz.sha256 \
+              dist/aegis-cli.tar.gz.cosign.bundle \
+              --clobber
+          else
+            gh release create "$tag" \
+              dist/aegis-cli.tar.gz \
+              dist/aegis-cli.tar.gz.sha256 \
+              dist/aegis-cli.tar.gz.cosign.bundle \
+              --title "aegis-cli ${tag}" \
+              --generate-notes
+          fi
