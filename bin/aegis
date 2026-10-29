@@ -8190,8 +8190,23 @@ cmd_update_client() {
         old_dev="$(_env_file_value "$state" OLD_DEV)"
         stage="$(_env_file_value "$state" STAGE)"
         resumed=1
-        if [[ "$stage" == "2" ]]; then
+        # 2026-10-29 incident (issue #251 follow-up): STAGE=2 means two
+        # DIFFERENT things, and the code used to treat them as one. (a) This
+        # process IS the handoff exec from the line below, immediately after
+        # 1-2 just succeeded in the parent — AEGIS_UPDATE_HANDOFF marks that.
+        # (b) This is a FRESH `aegis update` invocation from the user, finding
+        # a STAGE=2 state left over because step 3 (start) failed last time.
+        # Collapsing both into "skip 1-2" was the bug: a client stuck on a
+        # broken published version (v0.37.2's invalid compose, #251) re-pulled
+        # the SAME broken bundle:latest-tag forever — step 3 always failed the
+        # same way, re-writing STAGE=2, forever. Case (b) must re-run step 1:
+        # installing bundle:latest is idempotent (backup + re-extract) and is
+        # the ONLY step that can pick up a newer release published since the
+        # last failure, which is what lets a stuck client converge on its own.
+        if [[ "$stage" == "2" && -n "${AEGIS_UPDATE_HANDOFF:-}" ]]; then
             log "resuming at 3/4 with the updated CLI"
+        elif [[ "$stage" == "2" ]]; then
+            log "a previous update installed but failed to start — reinstalling the bundle in case a fix was published since, then retrying"
         else
             log "resuming an unfinished update from ${old_version:-unknown}"
         fi
@@ -8209,7 +8224,7 @@ cmd_update_client() {
     local -a child_env=(-u AEGIS_VERIFIED_BASE_REF -u AEGIS_DEV_IMAGE)
     [[ -n "$AEGIS_IMAGE_TAG_EXPLICIT" ]] || child_env+=(-u AEGIS_IMAGE_TAG)
 
-    if [[ "$stage" != "2" ]]; then
+    if [[ "$stage" != "2" || -z "${AEGIS_UPDATE_HANDOFF:-}" ]]; then
         _update_step_start 1 "Installing signed configuration bundle"
         _update_log "INFO" "Installing bundle from $(tildify "${AEGIS_INSTALL_SOURCE:-registry}")"
         if ! ( cmd_install ); then
@@ -8243,7 +8258,13 @@ cmd_update_client() {
         # keeps the same stdout/stderr, making the handoff invisible.
         printf 'STAGE=2\n' >> "$state"
         log "handing over to the updated CLI for the start + cleanup"
-        exec env "${child_env[@]}" AEGIS_CLI_MODE=client bash "${bin_dir}/aegis" update
+        # AEGIS_UPDATE_HANDOFF=1 marks THIS exact exec as the handoff: the
+        # child process reads STAGE=2 AND this var together to know steps 1-2
+        # just ran in its parent and must not run again. A later, independent
+        # `aegis update` invocation never carries this var, so it reads
+        # STAGE=2 alone as "the previous attempt died before cleanup" and
+        # correctly re-runs step 1 instead of skipping it.
+        exec env "${child_env[@]}" AEGIS_UPDATE_HANDOFF=1 AEGIS_CLI_MODE=client bash "${bin_dir}/aegis" update
     fi
 
     _update_step_with_eta 3 "Starting new version (download + verify; rebuilding image if needed)" START

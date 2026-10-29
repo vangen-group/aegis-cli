@@ -18,12 +18,12 @@ assert_equals() {
     local name="$1" expected="$2" actual="$3"
     if [[ "$expected" == "$actual" ]]; then
         printf "${GREEN}✓${NC} %s\n" "$name"
-        ((passed++))
+        passed=$((passed + 1))
     else
         printf "${RED}✗${NC} %s\n" "$name"
         printf "  Expected: %s\n" "$expected"
         printf "  Actual:   %s\n" "$actual"
-        ((failed++))
+        failed=$((failed + 1))
     fi
 }
 
@@ -68,15 +68,15 @@ test_progress_bar() {
     # Just verify the function runs without error
     _update_step_progress 0 2>/dev/null
     printf "${GREEN}✓${NC} _update_step_progress(0) runs\n"
-    ((passed++))
+    passed=$((passed + 1))
 
     _update_step_progress 50 2>/dev/null
     printf "${GREEN}✓${NC} _update_step_progress(50) runs\n"
-    ((passed++))
+    passed=$((passed + 1))
 
     _update_step_progress 100 2>/dev/null
     printf "${GREEN}✓${NC} _update_step_progress(100) runs\n"
-    ((passed++))
+    passed=$((passed + 1))
 }
 
 # Test: logging functions
@@ -91,10 +91,10 @@ test_logging() {
 
     if grep -q "Test message" "$temp_log"; then
         printf "${GREEN}✓${NC} _update_log writes to file\n"
-        ((passed++))
+        passed=$((passed + 1))
     else
         printf "${RED}✗${NC} _update_log writes to file\n"
-        ((failed++))
+        failed=$((failed + 1))
     fi
 }
 

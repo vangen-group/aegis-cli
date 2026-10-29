@@ -2,6 +2,15 @@
 
 All notable changes to the Aegis CLI are documented here.
 
+## [0.2.4] - 2026-10-29
+
+### Added
+- `bin/aegis-license.js`, `bin/aegis-activate.js`, `bin/aegis-license-api.js`, `bin/aegis-telemetry.js`, `bin/aegis.cmd`, `bin/aegis.ps1` — the rest of the client CLI's files, previously only shipped from aegis-workstation's bundle. First step of the standalone-distribution migration (this repo becomes the single source of truth for the CLI).
+
+### Fixed
+- Synced `bin/aegis` with aegis-workstation's copy, including the update-resume fix: a fresh `aegis update` retry now re-installs the bundle instead of looping forever on a known-broken published version (aegis-workstation issue #251 follow-up).
+- `tests/update-uiux.test.sh`: replaced `((passed++))`/`((failed++))` with `passed=$((passed + 1))` — under `set -e`, the arithmetic-expression form returns the PRE-increment value, so incrementing from 0 evaluated to "false" and killed the whole suite after the very first assertion. The suite's nothing-after-the-first-check behavior was this bug, not a passing run.
+
 ## [0.2.3] - 2026-10-24
 
 ### Fixed

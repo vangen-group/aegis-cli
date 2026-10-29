@@ -3,6 +3,10 @@ bin/*
 !bin/aegis
 !bin/aegis.cmd
 !bin/aegis.ps1
+!bin/aegis-license.js
+!bin/aegis-activate.js
+!bin/aegis-license-api.js
+!bin/aegis-telemetry.js
 dist/
 *.exe
 *.dll
