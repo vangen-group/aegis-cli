@@ -188,22 +188,21 @@ Explain the implementation approach.
 
 ## Release Process
 
-1. **Update VERSION file**
-   ```
-   0.3.0
-   ```
+Automated with [release-please](https://github.com/googleapis/release-please) since
+2026-10-30 — VERSION and CHANGELOG.md are no longer edited by hand:
 
-2. **Update CHANGELOG.md** — move Unreleased to version + date
+1. Use [Conventional Commits](https://www.conventionalcommits.org/) (`fix:`, `feat:`,
+   `feat!:`/`BREAKING CHANGE:`) — release-please reads these to decide the next
+   version and to write the changelog entry.
+2. Every push to `master` updates (or opens) a standing "chore(master): release X.Y.Z"
+   pull request, which bumps `VERSION` and `CHANGELOG.md` for you.
+3. Merge that pull request when you want to ship. The merge itself creates the
+   `vX.Y.Z` tag and the GitHub Release, which triggers
+   `.github/workflows/release.yml` to build, sign (cosign), and attach the
+   release assets.
 
-3. **Create annotated git tag**
-   ```bash
-   git tag -a v0.3.0 -m "Release v0.3.0"
-   ```
-
-4. **Push tag to remote**
-   ```bash
-   git push origin v0.3.0
-   ```
+No manual VERSION edit or `git tag` — doing either by hand now fights the bot
+instead of helping it.
 
 ## Questions?
 

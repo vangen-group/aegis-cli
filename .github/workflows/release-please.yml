@@ -1,0 +1,32 @@
+name: Release Please
+
+on:
+  push:
+    branches: [master]
+
+# The default GITHUB_TOKEN must be allowed to write. On a private repository this
+# requires Settings -> Actions -> General -> Workflow permissions to be set to
+# "Read and write permissions"; without it the first run fails on permissions,
+# not on configuration. Same shape as aegis-workstation's own
+# .github/workflows/release-please.yml — see that file's comment for why the
+# release pull request merge stays a manual click (a GITHUB_TOKEN-authored
+# merge starts no workflow run, so .github/workflows/release.yml's tag trigger
+# would never fire).
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: googleapis/release-please-action@v5.0.0
+        with:
+          # Empty-string fallback when unset: works immediately with manual
+          # approval of the release PR's own CI run; set RELEASE_PLEASE_TOKEN
+          # (a fine-grained PAT, contents:write + pull-requests:write) to end
+          # that manual step, same tradeoff as aegis-workstation.
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json

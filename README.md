@@ -72,7 +72,7 @@ aegis-cli/
 ├── tests/
 │   └── update-uiux.test.sh   # Unit tests (15+ cases)
 ├── scripts/                   # Helper utilities (planned)
-├── VERSION                    # Semantic version (0.2.0)
+├── VERSION                    # Semantic version (release-please managed)
 ├── CHANGELOG.md              # Complete change history
 ├── CONTRIBUTING.md           # Contribution guidelines
 └── README.md                 # This file
@@ -175,18 +175,9 @@ See [`CONTRIBUTING.md`](CONTRIBUTING.md) for:
 
 ### Creating a New Release
 
-```bash
-# 1. Update VERSION
-echo "0.3.0" > VERSION
-
-# 2. Update CHANGELOG.md
-
-# 3. Create annotated tag
-git tag -a v0.3.0 -m "Release v0.3.0"
-
-# 4. Push
-git push origin v0.3.0
-```
+Automated by [release-please](https://github.com/googleapis/release-please) — see
+"Release Process" in [`CONTRIBUTING.md`](CONTRIBUTING.md). In short: commit with
+Conventional Commits, merge the release PR it keeps open, done.
 
 ## Roadmap
 
