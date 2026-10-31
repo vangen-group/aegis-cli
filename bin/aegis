@@ -3691,7 +3691,7 @@ update_verify() {
 # Names are validated (a plain file name that exists in bin/); anything else is
 # ignored. A checkout without the list file (older) gets the built-in set below,
 # which is the ONE copy of the fallback.
-AEGIS_HOST_FILES_BUILTIN="aegis aegis-accounts.js aegis-license.js aegis-activate.js aegis-telemetry.js aegis.cmd aegis.ps1"
+AEGIS_HOST_FILES_BUILTIN="aegis aegis-license.js aegis-activate.js aegis-telemetry.js aegis.cmd aegis.ps1"
 
 update_host_files() {
     local root="$1" list line f
@@ -5540,6 +5540,36 @@ cmd_secret_show() {
     vault_open "$name"
 }
 
+# Keeps only the newest AEGIS_BACKUP_KEEP timestamped backups of an install
+# target (<dst>.bak-<timestamp>), deleting older ones. Called right after a
+# fresh backup is created, so that one always survives the prune. Without
+# this, every `aegis install`/`update` attempt — including every retry
+# during a debugging session — left its own backup forever (confirmed on a
+# real machine: 40+ accumulated over two weeks). Never fatal: a stray
+# permission error on one old backup is a warning, not a reason to fail an
+# install that already succeeded. Lexicographic sort works because the
+# `%Y%m%dT%H%M%SZ` timestamp format already sorts chronologically.
+AEGIS_BACKUP_KEEP="${AEGIS_BACKUP_KEEP:-3}"
+_prune_backups() {
+    local dst="$1" keep="${2:-$AEGIS_BACKUP_KEEP}" base dir name
+    base="$(basename "${dst%/}")"
+    dir="$(dirname "${dst%/}")"
+    [[ -d "$dir" ]] || return 0
+    local -a backups=()
+    for name in "${dir}/${base}.bak-"*; do
+        [[ -d "$name" ]] || continue
+        backups+=("$name")
+    done
+    local total="${#backups[@]}"
+    (( total > keep )) || return 0
+    IFS=$'\n' backups=($(printf '%s\n' "${backups[@]}" | sort)); unset IFS
+    local i
+    for ((i = 0; i < total - keep; i++)); do
+        rm -rf "${backups[$i]}" 2>/dev/null \
+            || err "WARNING: could not remove old backup: ${backups[$i]}"
+    done
+}
+
 # T10 — the sandbox sibling of cmd_install's block below. Same shape (copy the
 # template tree OUTSIDE every mount, back up what was there, verify the copy),
 # its own source/destination, so `aegis install`/`aegis update` cover BOTH
@@ -5583,6 +5613,7 @@ install_sandbox_template() {
         local backup="${dst_native%/}.bak-$(date -u +%Y%m%dT%H%M%SZ)"
         log "previous sandbox install backed up to: ${backup}"
         mv "${dst_native}" "${backup}"
+        _prune_backups "${dst_native}"
     fi
     cp -R "${src_native}" "${dst_native}"
 
@@ -5953,6 +5984,7 @@ cmd_install() {
         local backup="${dst_native%/}.bak-$(date -u +%Y%m%dT%H%M%SZ)"
         log "previous install backed up to: ${backup}"
         mv "${dst_native}" "${backup}"
+        _prune_backups "${dst_native}"
     fi
     cp -R "${src_native}" "${dst_native}"
 
