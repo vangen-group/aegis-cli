@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - name: Syntax-check bin/aegis
+        run: bash -n bin/aegis
+
+      - name: Run update UX tests
+        run: bash tests/update-uiux.test.sh
+
+      - name: Build the release tarball (no signing, just structure)
+        run: bash scripts/build-release-tarball.sh dist/aegis-cli.tar.gz
+
+      - name: Verify the tarball is flat and carries every expected member
+        run: |
+          set -eu
+          entries="$(tar -tzf dist/aegis-cli.tar.gz | sort)"
+          expected="$(printf '%s\n' \
+            ./ \
+            ./aegis \
+            ./aegis-activate.js \
+            ./aegis-license-api.js \
+            ./aegis-license-keys.json \
+            ./aegis-license.js \
+            ./aegis-secret-protect.js \
+            ./aegis-telemetry.js \
+            ./aegis.cmd \
+            ./aegis.ps1 | sort)"
+          if [ "$entries" != "$expected" ]; then
+            echo "tarball members do not match what install.sh/aegis update expect:" >&2
+            diff <(printf '%s\n' "$expected") <(printf '%s\n' "$entries") >&2 || true
+            exit 1
+          fi
