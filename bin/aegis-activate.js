@@ -50,6 +50,7 @@ const os = require('os');
 const path = require('path');
 const { createHash, randomUUID } = require('crypto');
 const { execFileSync } = require('child_process');
+const secretProtect = require('./aegis-secret-protect');
 
 // Defaults match docs/11-aegis-cli.md §8.16: the service the licence comes
 // from, and the two files that travel with the rest of this host's credentials.
@@ -223,9 +224,28 @@ async function secretAuthenticates(apiUrl, licenseId, activationId, secret) {
 
 function readCredential(file) {
     if (!fs.existsSync(file)) return null;
+    let raw;
+    try {
+        raw = fs.readFileSync(file, 'utf8');
+    } catch (e) {
+        die('the credential file is unreadable: ' + file + ': ' + e.message);
+    }
+    let json;
+    const tagged = secretProtect.parse(raw.trim());
+    if (tagged) {
+        try {
+            json = secretProtect.unprotect(tagged.tag, tagged.blob);
+        } catch (e) {
+            die('could not unprotect the credential file: ' + file + ': ' + e.message);
+        }
+    } else {
+        // No recognized "TAG:" prefix: a legacy file written before
+        // aegis-secret-protect.js existed, bare plaintext JSON.
+        json = raw;
+    }
     let data;
     try {
-        data = JSON.parse(fs.readFileSync(file, 'utf8'));
+        data = JSON.parse(json);
     } catch (e) {
         die('the credential file is unreadable: ' + file + ': ' + e.message);
     }
@@ -392,11 +412,15 @@ async function main() {
     // cannot authenticate.
     const serverCreatedActivation = returnedActivationId === activationId;
 
-    const storeCredential = () => writePrivate(credentialFile, JSON.stringify({
-        license_id: returnedLicenseId || licenseId,
-        activation_id: returnedActivationId,
-        device_secret: deviceSecret,
-    }, null, 2) + '\n');
+    const storeCredential = () => {
+        const json = JSON.stringify({
+            license_id: returnedLicenseId || licenseId,
+            activation_id: returnedActivationId,
+            device_secret: deviceSecret,
+        });
+        const { tag, blob } = secretProtect.protect(json);
+        writePrivate(credentialFile, secretProtect.serialize(tag, blob) + '\n');
+    };
     const lostCredentialNote = 'aegis-activate: a device credential is handed over only once — if it '
         + 'was lost, the seat must be released before this machine can activate again.\n';
 

@@ -43,6 +43,7 @@ MEMBERS=(
     "aegis-license.js:bin/aegis-license.js"
     "aegis-activate.js:bin/aegis-activate.js"
     "aegis-license-api.js:bin/aegis-license-api.js"
+    "aegis-secret-protect.js:bin/aegis-secret-protect.js"
     "aegis-telemetry.js:bin/aegis-telemetry.js"
     "aegis-license-keys.json:config/license-keys.json"
 )

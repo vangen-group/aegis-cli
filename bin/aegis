@@ -3691,7 +3691,7 @@ update_verify() {
 # Names are validated (a plain file name that exists in bin/); anything else is
 # ignored. A checkout without the list file (older) gets the built-in set below,
 # which is the ONE copy of the fallback.
-AEGIS_HOST_FILES_BUILTIN="aegis aegis-license.js aegis-activate.js aegis-telemetry.js aegis.cmd aegis.ps1"
+AEGIS_HOST_FILES_BUILTIN="aegis aegis-license.js aegis-activate.js aegis-license-api.js aegis-secret-protect.js aegis-telemetry.js aegis.cmd aegis.ps1"
 
 update_host_files() {
     local root="$1" list line f

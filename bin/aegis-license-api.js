@@ -48,6 +48,7 @@ const os = require('os');
 const path = require('path');
 const { randomUUID } = require('crypto');
 const { spawnSync } = require('child_process');
+const secretProtect = require('./aegis-secret-protect');
 
 const DEFAULT_API_URL = 'https://aegis-workstation-production.up.railway.app';
 const DEFAULT_LICENSE_FILE = path.join(os.homedir(), '.aegis', 'license');
@@ -125,9 +126,38 @@ function readCredential(file) {
         die('this machine is not activated: no device credential at ' + file
             + ' (run: aegis license activate <license-id>)');
     }
+    let raw;
+    try {
+        raw = fs.readFileSync(file, 'utf8');
+    } catch (e) {
+        die('the credential file is unreadable: ' + file + ': ' + e.message);
+    }
+    const tagged = secretProtect.parse(raw.trim());
+    let json;
+    if (tagged) {
+        try {
+            json = secretProtect.unprotect(tagged.tag, tagged.blob);
+        } catch (e) {
+            die('could not unprotect the credential file: ' + file + ': ' + e.message);
+        }
+    } else {
+        // No recognized "TAG:" prefix: a legacy file from before
+        // aegis-secret-protect.js existed, bare plaintext JSON. Upgrade it
+        // in place now rather than leaving it plaintext until the next
+        // `aegis license activate` -- heartbeat/renew run far more often
+        // than re-activation.
+        json = raw;
+        try {
+            const { tag, blob } = secretProtect.protect(json);
+            writePrivate(file, secretProtect.serialize(tag, blob) + '\n');
+        } catch (e) {
+            // Best effort: the read already succeeded, so a failed upgrade
+            // write must not block the command that was actually asked for.
+        }
+    }
     let data;
     try {
-        data = JSON.parse(fs.readFileSync(file, 'utf8'));
+        data = JSON.parse(json);
     } catch (e) {
         die('the credential file is unreadable: ' + file + ': ' + e.message);
     }

@@ -6,6 +6,7 @@ bin/*
 !bin/aegis-license.js
 !bin/aegis-activate.js
 !bin/aegis-license-api.js
+!bin/aegis-secret-protect.js
 !bin/aegis-telemetry.js
 dist/
 *.exe
