@@ -2,6 +2,13 @@
 
 All notable changes to the Aegis CLI are documented here.
 
+## [0.2.15](https://github.com/vangen-group/aegis-cli/compare/v0.2.14...v0.2.15) (2026-10-31)
+
+
+### Bug Fixes
+
+* drop dead owner-checkout default that leaked into client warnings ([265d6a4](https://github.com/vangen-group/aegis-cli/commit/265d6a4e80acf2ff764a5df8b0ae9b12b7f2ec8a))
+
 ## [0.2.14](https://github.com/vangen-group/aegis-cli/compare/v0.2.13...v0.2.14) (2026-10-31)
 
 
