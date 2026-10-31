@@ -1156,33 +1156,6 @@ pull_and_verify_published_image() {
     AEGIS_VERIFIED_BASE_REF="${AEGIS_IMAGE_REGISTRY}/${AEGIS_IMAGE_REPO}@${image_digest}"
 }
 
-# U2: `gh auth setup-git` makes git use gh as the credential helper for
-# github.com. It used to run once per home volume (behind FIRST_RUN_MARKER), so
-# a home first started on an image WITHOUT gh never got it, even after gh was
-# added — and an image that lost gh kept a helper pointing at nothing. Now it
-# runs on every `up` and rebuild, which is safe because the command is
-# idempotent (it replaces its own helper entries). The test is for the REAL
-# binary: /usr/local/bin/gh is the Aegis wrapper and exists in every image, but
-# only exec's /usr/bin/gh, which is there only when the gh layer was built.
-# Never fatal: a broken helper is a warning, not a reason to refuse a start.
-setup_gh_git_helper() {
-    if [[ -z "${GH_TOKEN:-}" ]]; then
-        log "GH_TOKEN not set in the host environment — skipping gh auth setup-git."
-        return 0
-    fi
-    # docker_exec_path: Git Bash would rewrite /usr/bin/gh into a Windows path.
-    if ! docker_exec_path "$DEV_CONTAINER" test -x /usr/bin/gh >/dev/null 2>&1; then
-        log "this image has no gh (tools are opt-in) — skipping gh auth setup-git; add it with 'aegis add tool gh'."
-        return 0
-    fi
-    if docker exec -e GH_TOKEN "$DEV_CONTAINER" gh auth setup-git >/dev/null 2>&1; then
-        log "git uses gh for github.com (gh auth setup-git)."
-    else
-        err "WARNING: gh auth setup-git failed — git over HTTPS to github.com may ask for credentials"
-    fi
-    return 0
-}
-
 # ---------------------------------------------------------------------------
 # T29: `aegis up` starts the image from the registry, verifies the signature first.
 # ---------------------------------------------------------------------------
@@ -1339,10 +1312,6 @@ cmd_up() {
             || err "WARNING: git config --global --add safe.directory '*' failed"
         docker exec "$DEV_CONTAINER" sh -c "touch '$FIRST_RUN_MARKER'"
     fi
-    # Every start, not once per home: the image may have gained (or lost) gh
-    # since the marker was written — see setup_gh_git_helper.
-    setup_gh_git_helper
-
     # Apply the per-user configuration with configure-workstation.sh (gentle-ai
     # for claude/opencode, herdr config, AGENTS.md, profile). Since S5 this is
     # its only trigger; the VS Code postCreateCommand used to run it too.
@@ -6684,8 +6653,6 @@ env_rebuild_and_apply() {
         exit 1
     fi
     log "container recreated, proxy reloaded"
-    # A rebuild is exactly when gh appears in (or leaves) the image.
-    setup_gh_git_helper
 
     summarize_rebuild "$started_at"
 }
