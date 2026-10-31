@@ -2,6 +2,12 @@
 
 All notable changes to the Aegis CLI are documented here.
 
+## [0.2.8] - 2026-10-31
+
+### Fixed
+- `bin/aegis` was frozen since the initial sync from aegis-workstation (before its T4/T5 migration work existed), so this release never actually carried either fix: `aegis update`'s CLI step downloading from aegis-cli releases (T4), or `aegis install` no longer requiring `bin/aegis` to exist inside the bundle (T5). A client on v0.2.7 running `aegis update` against the current bundle (which stopped shipping `bin/aegis` in T5) hit the stale requirement forever, with no newer logic on the installed binary to break the loop. Synced `bin/aegis` from aegis-workstation's current copy to fix it for real.
+- Published manually (release-please is currently blocked on this repo — "GitHub Actions is not permitted to create or approve pull requests" — until that permission or a `RELEASE_PLEASE_TOKEN` is set up).
+
 ## [0.2.7] - 2026-10-29
 
 ### Fixed
