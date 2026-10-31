@@ -2,6 +2,13 @@
 
 All notable changes to the Aegis CLI are documented here.
 
+## [0.2.12](https://github.com/vangen-group/aegis-cli/compare/v0.2.11...v0.2.12) (2026-10-31)
+
+
+### Bug Fixes
+
+* encrypt device.json at rest instead of relying on file mode ([f580a89](https://github.com/vangen-group/aegis-cli/commit/f580a89a6c48f5ae57c4be8fcb785f3f99b645dc))
+
 ## [0.2.11](https://github.com/vangen-group/aegis-cli/compare/v0.2.10...v0.2.11) (2026-10-31)
 
 
