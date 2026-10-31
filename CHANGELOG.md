@@ -2,6 +2,13 @@
 
 All notable changes to the Aegis CLI are documented here.
 
+## [0.2.11](https://github.com/vangen-group/aegis-cli/compare/v0.2.10...v0.2.11) (2026-10-31)
+
+
+### Bug Fixes
+
+* prune old install backups, remove dead aegis-accounts.js ref ([2b83afd](https://github.com/vangen-group/aegis-cli/commit/2b83afd015d5a3f12dd253a23ee93979e334e59d))
+
 ## [0.2.10](https://github.com/vangen-group/aegis-cli/compare/v0.2.9...v0.2.10) (2026-10-31)
 
 
