@@ -2,6 +2,13 @@
 
 All notable changes to the Aegis CLI are documented here.
 
+## [0.2.9](https://github.com/vangen-group/aegis-cli/compare/v0.2.8...v0.2.9) (2026-10-31)
+
+
+### Bug Fixes
+
+* accept the leading ./ aegis-cli release tar members carry ([f3d686c](https://github.com/vangen-group/aegis-cli/commit/f3d686cd3e92c2b4a7a1f0305ab091d393452549))
+
 ## [0.2.8] - 2026-10-31
 
 ### Fixed
