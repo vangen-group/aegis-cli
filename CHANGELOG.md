@@ -2,6 +2,13 @@
 
 All notable changes to the Aegis CLI are documented here.
 
+## [0.2.13](https://github.com/vangen-group/aegis-cli/compare/v0.2.12...v0.2.13) (2026-10-31)
+
+
+### Bug Fixes
+
+* load System.Security before using DPAPI's ProtectedData ([5af31c8](https://github.com/vangen-group/aegis-cli/commit/5af31c898941717e056b7de6de58322d9a6109f5))
+
 ## [0.2.12](https://github.com/vangen-group/aegis-cli/compare/v0.2.11...v0.2.12) (2026-10-31)
 
 
