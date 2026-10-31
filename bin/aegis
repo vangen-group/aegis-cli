@@ -640,6 +640,13 @@ AEGIS_IMAGE_IDENTITY_REGEXP="${AEGIS_IMAGE_IDENTITY_REGEXP:-(?i)^https://github\
 # and the pin is a release tag whose digest the first successful verify will make visible.
 AEGIS_COSIGN_IMAGE="${AEGIS_COSIGN_IMAGE:-ghcr.io/sigstore/cosign/cosign:v3.1.3}"
 
+# T4 (cli-standalone-distribution, 2026-10-29): aegis-cli is its own repo with
+# its own release cadence — `aegis update`'s CLI step pulls the latest signed
+# release from here instead of copying bin/ out of the just-installed bundle.
+# AEGIS_CLI_VERSION pins an exact tag (e.g. v0.2.7); unset means latest.
+AEGIS_CLI_REPO="${AEGIS_CLI_REPO:-vangen-group/aegis-cli}"
+AEGIS_CLI_IDENTITY_REGEXP="${AEGIS_CLI_IDENTITY_REGEXP:-(?i)^https://github\\.com/${AEGIS_CLI_REPO}/}"
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -5987,8 +5994,12 @@ cmd_install() {
     # a valid client install.
     local missing=0 f required_files
     if [[ "$AEGIS_CLI_MODE" == "client" ]]; then
+        # T5: bin/aegis is deliberately NOT required here anymore — aegis-cli's
+        # own signed releases own the launcher since T4, and the bundle no
+        # longer carries it (client-bundle.txt). Requiring it would reject
+        # every client install from now on, since it would never be there.
         required_files=(
-            .devcontainer/docker-compose.yml .devcontainer/Dockerfile.client bin/aegis
+            .devcontainer/docker-compose.yml .devcontainer/Dockerfile.client
             scripts/aegis-env.js scripts/aegis-allowlist.js
             scripts/generate-build-context.sh scripts/aegis-build-view.js
             scripts/generate-allowlist.sh scripts/audit-container.sh
@@ -8071,12 +8082,13 @@ _remove_old_image() {
     fi
 }
 
-# Step 2: the client launcher files from the freshly installed bundle, next to
-# the launcher that is RUNNING (or into AEGIS_BIN_DIR when the caller set it), so
-# the command the user actually types is the one updated. Fail-closed and
-# all-or-nothing: every entry is validated and staged BESIDE its target first,
-# and only when all of them are ready are they renamed into place (the running
-# script keeps its own inode, as in the owner's update). Never aegis-dev*.
+# Step 2: the client launcher files, next to the launcher that is RUNNING (or
+# into AEGIS_BIN_DIR when the caller set it), so the command the user actually
+# types is the one updated. Fail-closed and all-or-nothing: every entry is
+# staged BESIDE its target first, and only when all of them are ready are they
+# renamed into place (the running script keeps its own inode, as in the
+# owner's update). Never aegis-dev* (aegis-cli's release never carries those
+# dev-only helpers in the first place, so there is nothing left to exclude).
 _client_bin_dir() {
     if [[ -n "$AEGIS_BIN_DIR_EXPLICIT" ]]; then
         printf '%s' "${AEGIS_BIN_DIR%/}"
@@ -8085,41 +8097,131 @@ _client_bin_dir() {
     fi
 }
 
-_client_install_launcher() {
-    local src="${AEGIS_INSTALL_DIR%/}/bin" list="${AEGIS_INSTALL_DIR%/}/host-launcher-files.txt"
-    local dst stamp f
-    dst="$(_client_bin_dir)"
-    if [[ ! -f "$list" ]]; then
-        err "the installed bundle has no host-launcher-files.txt — the CLI was not updated."
+# T4: downloads the latest (or AEGIS_CLI_VERSION-pinned) aegis-cli release,
+# verifies its cosign bundle with the SAME throwaway-container pattern
+# _verify_local_image uses for the workstation image (no binary to manage on
+# Windows), and extracts it. On success, sets AEGIS_CLI_STAGING_DIR to the
+# extraction directory — a global, NOT an echo: log()/err() write to stdout,
+# so a `$(_fetch_cli_release)` capture would corrupt the path with every
+# progress line this function prints. The caller is responsible for removing
+# its PARENT (the mktemp -d root) once it is done reading from it. Failure is
+# a non-zero return with AEGIS_CLI_STAGING_DIR left unset.
+AEGIS_CLI_STAGING_DIR=""
+_fetch_cli_release() {
+    AEGIS_CLI_STAGING_DIR=""
+    local tag="${AEGIS_CLI_VERSION:-}" staging tarball bundle out rc=0
+    command -v docker >/dev/null 2>&1 || { err "docker is required to verify the aegis-cli release"; return 1; }
+    staging="$(mktemp -d)" || { err "mktemp failed"; return 1; }
+    tarball="${staging}/aegis-cli.tar.gz"
+    bundle="${staging}/aegis-cli.tar.gz.cosign.bundle"
+
+    if [[ -z "$tag" ]]; then
+        tag="$(curl -fsSL "https://api.github.com/repos/${AEGIS_CLI_REPO}/releases/latest" \
+            | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+        if [[ -z "$tag" ]]; then
+            err "could not resolve the latest aegis-cli release"
+            rm -rf "$staging"
+            return 1
+        fi
+    fi
+
+    local base_url="https://github.com/${AEGIS_CLI_REPO}/releases/download/${tag}"
+    if ! curl -fsSL --output "$tarball" "${base_url}/aegis-cli.tar.gz"; then
+        err "could not download aegis-cli ${tag}"
+        rm -rf "$staging"
         return 1
     fi
+    if ! curl -fsSL --output "$bundle" "${base_url}/aegis-cli.tar.gz.cosign.bundle"; then
+        err "could not download the aegis-cli ${tag} signature bundle"
+        rm -rf "$staging"
+        return 1
+    fi
+
+    log "verifying aegis-cli ${tag}"
+    out="$(mktemp)" || { err "mktemp failed"; rm -rf "$staging"; return 1; }
+    local staging_native
+    staging_native="$(_to_native_path "$staging")"
+    # No registry credentials needed here (unlike _verify_local_image): a
+    # blob verification only talks to public Sigstore infrastructure
+    # (Fulcio/Rekor/TUF), never the private proxy registry. --user 0:0 for
+    # the same reason as there — the pinned image's uid 65532 cannot read a
+    # plain mktemp -d on a real Linux host.
+    env MSYS_NO_PATHCONV=1 docker run --rm \
+        --user 0:0 \
+        --volume "${staging_native}:/work:ro" \
+        "$AEGIS_COSIGN_IMAGE" verify-blob \
+            --bundle /work/aegis-cli.tar.gz.cosign.bundle \
+            --certificate-oidc-issuer "$AEGIS_IMAGE_OIDC_ISSUER" \
+            --certificate-identity-regexp "$AEGIS_CLI_IDENTITY_REGEXP" \
+            /work/aegis-cli.tar.gz >"$out" 2>&1 || rc=$?
+    if [[ "$rc" -ne 0 ]]; then
+        err "the aegis-cli ${tag} signature did NOT verify:"
+        sed 's/^/  /' "$out" >&2
+        rm -f "$out"
+        rm -rf "$staging"
+        return 1
+    fi
+    rm -f "$out"
+    log "aegis-cli ${tag} signature verified — signed by a run of github.com/${AEGIS_CLI_REPO}"
+
+    # R1-001, carried over from the old host-launcher-files.txt check: a bare
+    # file name only, never a path out of the extraction directory. GNU tar
+    # does not refuse a `../` member on its own, and a signature only proves
+    # WHO published the bytes, not that this script trusts every path inside
+    # them — so the member list is validated BEFORE tar ever touches disk.
+    local m
+    while IFS= read -r m; do
+        [[ -n "$m" ]] || continue
+        if [[ "$m" == */* || "$m" == .* ]]; then
+            err "the aegis-cli ${tag} release contains an invalid member '${m}' — the CLI was not updated."
+            rm -rf "$staging"
+            return 1
+        fi
+    done < <(tar -tzf "$tarball")
+
+    mkdir -p "${staging}/extracted"
+    if ! tar -xzf "$tarball" -C "${staging}/extracted"; then
+        err "could not extract aegis-cli ${tag}"
+        rm -rf "$staging"
+        return 1
+    fi
+    AEGIS_CLI_STAGING_DIR="${staging}/extracted"
+}
+
+_client_install_launcher() {
+    local dst stamp f staging
+    dst="$(_client_bin_dir)"
+
+    if ! _fetch_cli_release; then
+        err "the CLI was not updated."
+        return 1
+    fi
+    staging="$AEGIS_CLI_STAGING_DIR"
+
     local -a names=()
-    while IFS= read -r f; do
-        f="${f%%#*}"; f="${f//[[:space:]]/}"
-        [[ -n "$f" ]] || continue
-        case "$f" in aegis-dev*) continue ;; esac
-        # A bare file name only: never a path out of the bin directory (R1-001).
-        if [[ "$f" == */* || "$f" == .* ]]; then
-            err "the installed bundle lists an invalid launcher file '${f}' — the CLI was not updated."
-            return 1
-        fi
-        if [[ ! -f "${src}/${f}" ]]; then
-            err "the installed bundle is missing bin/${f} — the CLI was not updated."
-            return 1
-        fi
-        names+=("$f")
-    done < "$list"
+    for f in "${staging}"/*; do
+        [[ -f "$f" ]] || continue
+        names+=("$(basename "$f")")
+    done
+    if [[ ${#names[@]} -eq 0 ]]; then
+        err "the downloaded aegis-cli release had no files — the CLI was not updated."
+        rm -rf "$(dirname "$staging")"
+        return 1
+    fi
+
     stamp="$(date -u +%Y%m%dT%H%M%SZ)"
     mkdir -p "$dst"
     for f in "${names[@]}"; do
-        if ! cp "${src}/${f}" "${dst}/.${f}.new-${stamp}"; then
+        if ! cp "${staging}/${f}" "${dst}/.${f}.new-${stamp}"; then
             local g
             for g in "${names[@]}"; do rm -f "${dst}/.${g}.new-${stamp}"; done
             err "could not stage the new CLI in $(tildify "$dst") — the CLI was not updated."
+            rm -rf "$(dirname "$staging")"
             return 1
         fi
         [[ "$f" == "aegis" ]] && chmod +x "${dst}/.${f}.new-${stamp}" 2>/dev/null || true
     done
+    rm -rf "$(dirname "$staging")"
     # Commit: back up, then rename into place. Every step is checked: a failure
     # here is reported as a partial update with its backups, never as success.
     local failed=""
