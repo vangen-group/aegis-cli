@@ -2,6 +2,13 @@
 
 All notable changes to the Aegis CLI are documented here.
 
+## [0.2.14](https://github.com/vangen-group/aegis-cli/compare/v0.2.13...v0.2.14) (2026-10-31)
+
+
+### Bug Fixes
+
+* retry upgrading a device.json stuck at PLAIN1 ([20229d7](https://github.com/vangen-group/aegis-cli/commit/20229d7b4ea8f445807867dd4649664a2d9c75f2))
+
 ## [0.2.13](https://github.com/vangen-group/aegis-cli/compare/v0.2.12...v0.2.13) (2026-10-31)
 
 
