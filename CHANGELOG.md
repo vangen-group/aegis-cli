@@ -2,6 +2,13 @@
 
 All notable changes to the Aegis CLI are documented here.
 
+## [0.2.10](https://github.com/vangen-group/aegis-cli/compare/v0.2.9...v0.2.10) (2026-10-31)
+
+
+### Bug Fixes
+
+* remove the automatic gh auth setup-git at aegis up ([5665a46](https://github.com/vangen-group/aegis-cli/commit/5665a46e3b7545d844328779431119e011f9b2e9))
+
 ## [0.2.9](https://github.com/vangen-group/aegis-cli/compare/v0.2.8...v0.2.9) (2026-10-31)
 
 
