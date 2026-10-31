@@ -57,29 +57,53 @@ function hasCommand(cmd) {
     return !probe.error && probe.status === 0;
 }
 
+// Set AEGIS_SECRET_PROTECT_DEBUG=1 to see exactly why a tier failed instead
+// of silently moving on to the next one -- the fallback chain is meant to
+// degrade gracefully for an end user, not to hide a real bug from whoever is
+// debugging it.
+function debugFail(label, run) {
+    if (!process.env.AEGIS_SECRET_PROTECT_DEBUG) return;
+    process.stderr.write('aegis-secret-protect: [debug] ' + label + ' failed: '
+        + 'error=' + (run.error ? run.error.message : 'none')
+        + ' status=' + run.status
+        + ' stderr=' + JSON.stringify(String(run.stderr || '').slice(0, 500)) + '\n');
+}
+
 // --- Windows: DPAPI via powershell.exe --------------------------------------
+// System.Security.Cryptography.ProtectedData lives in System.Security.dll,
+// which Windows PowerShell 5.1 (powershell.exe, as opposed to pwsh.exe) does
+// NOT load by default -- Add-Type is required before the type resolves, or
+// every call fails with "type not found" regardless of quoting.
 
 function dpapiProtect(plaintext) {
-    const script = '$bytes = [System.Text.Encoding]::UTF8.GetBytes([Console]::In.ReadToEnd()); '
+    const script = 'Add-Type -AssemblyName System.Security; '
+        + '$bytes = [System.Text.Encoding]::UTF8.GetBytes([Console]::In.ReadToEnd()); '
         + '$enc = [System.Security.Cryptography.ProtectedData]::Protect($bytes, $null, '
         + '[System.Security.Cryptography.DataProtectionScope]::CurrentUser); '
         + '[Console]::Out.Write([Convert]::ToBase64String($enc))';
     const run = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
         input: plaintext, encoding: 'utf8',
     });
-    if (run.error || run.status !== 0 || !run.stdout) return null;
+    if (run.error || run.status !== 0 || !run.stdout) {
+        debugFail('dpapiProtect', run);
+        return null;
+    }
     return run.stdout.trim();
 }
 
 function dpapiUnprotect(blob) {
-    const script = '$bytes = [Convert]::FromBase64String([Console]::In.ReadToEnd()); '
+    const script = 'Add-Type -AssemblyName System.Security; '
+        + '$bytes = [Convert]::FromBase64String([Console]::In.ReadToEnd()); '
         + '$dec = [System.Security.Cryptography.ProtectedData]::Unprotect($bytes, $null, '
         + '[System.Security.Cryptography.DataProtectionScope]::CurrentUser); '
         + '[Console]::Out.Write([System.Text.Encoding]::UTF8.GetString($dec))';
     const run = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
         input: blob, encoding: 'utf8',
     });
-    if (run.error || run.status !== 0) return null;
+    if (run.error || run.status !== 0) {
+        debugFail('dpapiUnprotect', run);
+        return null;
+    }
     return run.stdout;
 }
 
@@ -97,13 +121,19 @@ function secretToolProtect(plaintext) {
         'store', '--label', 'Aegis Workstation device credential',
         'service', SERVICE_NAME, 'ref', ref,
     ], { input: plaintext, encoding: 'utf8' });
-    if (run.error || run.status !== 0) return null;
+    if (run.error || run.status !== 0) {
+        debugFail('secretToolProtect', run);
+        return null;
+    }
     return ref;
 }
 
 function secretToolUnprotect(ref) {
     const run = spawnSync('secret-tool', ['lookup', 'service', SERVICE_NAME, 'ref', ref], { encoding: 'utf8' });
-    if (run.error || run.status !== 0 || !run.stdout) return null;
+    if (run.error || run.status !== 0 || !run.stdout) {
+        debugFail('secretToolUnprotect', run);
+        return null;
+    }
     return run.stdout;
 }
 
@@ -111,7 +141,10 @@ function secretToolUnprotect(ref) {
 
 function gpgDefaultKeyFingerprint() {
     const run = spawnSync('gpg', ['--batch', '--list-secret-keys', '--with-colons'], { encoding: 'utf8' });
-    if (run.error || run.status !== 0) return null;
+    if (run.error || run.status !== 0) {
+        debugFail('gpgDefaultKeyFingerprint', run);
+        return null;
+    }
     const line = String(run.stdout).split('\n').find((l) => l.startsWith('fpr:'));
     if (!line) return null;
     const fields = line.split(':');
@@ -125,14 +158,20 @@ function gpgProtect(plaintext) {
         '--batch', '--yes', '--trust-model', 'always',
         '--encrypt', '--recipient', fpr, '--armor',
     ], { input: plaintext, encoding: 'utf8' });
-    if (run.error || run.status !== 0 || !run.stdout) return null;
+    if (run.error || run.status !== 0 || !run.stdout) {
+        debugFail('gpgProtect', run);
+        return null;
+    }
     return Buffer.from(run.stdout, 'utf8').toString('base64');
 }
 
 function gpgUnprotect(blob) {
     const armored = Buffer.from(blob, 'base64').toString('utf8');
     const run = spawnSync('gpg', ['--batch', '--yes', '--decrypt'], { input: armored, encoding: 'utf8' });
-    if (run.error || run.status !== 0) return null;
+    if (run.error || run.status !== 0) {
+        debugFail('gpgUnprotect', run);
+        return null;
+    }
     return run.stdout;
 }
 
@@ -146,13 +185,19 @@ function keychainProtect(plaintext) {
     const run = spawnSync('security', [
         'add-generic-password', '-a', account, '-s', SERVICE_NAME, '-w', plaintext, '-U',
     ], { encoding: 'utf8' });
-    if (run.error || run.status !== 0) return null;
+    if (run.error || run.status !== 0) {
+        debugFail('keychainProtect', run);
+        return null;
+    }
     return account;
 }
 
 function keychainUnprotect(account) {
     const run = spawnSync('security', ['find-generic-password', '-a', account, '-s', SERVICE_NAME, '-w'], { encoding: 'utf8' });
-    if (run.error || run.status !== 0 || !run.stdout) return null;
+    if (run.error || run.status !== 0 || !run.stdout) {
+        debugFail('keychainUnprotect', run);
+        return null;
+    }
     return run.stdout.replace(/\n$/, '');
 }
 
