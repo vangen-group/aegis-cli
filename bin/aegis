@@ -8169,10 +8169,19 @@ _fetch_cli_release() {
     # does not refuse a `../` member on its own, and a signature only proves
     # WHO published the bytes, not that this script trusts every path inside
     # them — so the member list is validated BEFORE tar ever touches disk.
-    local m
+    #
+    # aegis-cli's own scripts/build-release-tarball.sh packs with
+    # `tar -C <stage> -cf - .`, which gives every member a leading "./" AND
+    # an explicit "./" entry for the staging directory itself (confirmed
+    # against a real published release, not assumed) — strip that prefix
+    # before judging a member "a path", and the bare "./" entry is the
+    # directory, not a file to reject.
+    local m stripped
     while IFS= read -r m; do
         [[ -n "$m" ]] || continue
-        if [[ "$m" == */* || "$m" == .* ]]; then
+        stripped="${m#./}"
+        [[ -z "$stripped" ]] && continue
+        if [[ "$stripped" == */* || "$stripped" == .* ]]; then
             err "the aegis-cli ${tag} release contains an invalid member '${m}' — the CLI was not updated."
             rm -rf "$staging"
             return 1
