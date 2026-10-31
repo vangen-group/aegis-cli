@@ -277,4 +277,4 @@ function parse(content) {
     return null;
 }
 
-module.exports = { protect, unprotect, serialize, parse };
+module.exports = { protect, unprotect, serialize, parse, TAG_PLAIN };

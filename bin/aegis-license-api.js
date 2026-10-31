@@ -134,11 +134,29 @@ function readCredential(file) {
     }
     const tagged = secretProtect.parse(raw.trim());
     let json;
+    // Two cases retry protection, not just the legacy one: a PLAIN1 file
+    // might have landed there because no real store was reachable on a
+    // PAST run (confirmed happening in practice: a transient DPAPI bug meant
+    // every device.json on an affected machine was stuck PLAIN1 forever,
+    // since nothing ever re-attempted a stronger tier once one tag was
+    // already recognized). Retrying costs nothing when the fallback is still
+    // the only option -- protect() just returns PLAIN1 again.
     if (tagged) {
         try {
             json = secretProtect.unprotect(tagged.tag, tagged.blob);
         } catch (e) {
             die('could not unprotect the credential file: ' + file + ': ' + e.message);
+        }
+        if (tagged.tag === secretProtect.TAG_PLAIN) {
+            try {
+                const upgraded = secretProtect.protect(json);
+                if (upgraded.tag !== secretProtect.TAG_PLAIN) {
+                    writePrivate(file, secretProtect.serialize(upgraded.tag, upgraded.blob) + '\n');
+                }
+            } catch (e) {
+                // Best effort: the read already succeeded, so a failed
+                // upgrade write must not block the command that was asked for.
+            }
         }
     } else {
         // No recognized "TAG:" prefix: a legacy file from before
