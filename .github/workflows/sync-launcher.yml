@@ -1,0 +1,71 @@
+name: Sync launcher from aegis-workstation
+
+# aegis-workstation/templates/workstation/bin/ is where this launcher is
+# actually developed and tested (321 Docker/compose-dependent tests that
+# cannot run from this repo). This repo is the DISTRIBUTION channel: its own
+# release.yml signs and publishes whatever is committed here. This workflow
+# is the one step that keeps the two in sync, automatically, so nobody has
+# to remember to hand-copy a file again (that already caused real bugs: a
+# fix landed in aegis-workstation and this repo kept shipping the stale
+# version for several releases).
+#
+# AEGIS_WORKSTATION_READ_TOKEN is a fine-grained PAT scoped to ONLY
+# vangen-group/aegis-workstation, Contents: Read-only. Nothing else. Kept
+# here (the public repo) rather than having the private repo push into this
+# one, so the narrower-scoped credential lives on the side that pulls.
+on:
+  schedule:
+    - cron: '0 7 * * *' # daily safety net
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout aegis-cli
+        uses: actions/checkout@v7.0.1
+        with:
+          path: aegis-cli
+
+      - name: Checkout aegis-workstation (private, read-only)
+        uses: actions/checkout@v7.0.1
+        with:
+          repository: vangen-group/aegis-workstation
+          token: ${{ secrets.AEGIS_WORKSTATION_READ_TOKEN }}
+          path: aegis-workstation
+          sparse-checkout: |
+            templates/workstation/bin
+            templates/workstation/config/license-keys.json
+
+      - name: Copy the shared launcher files
+        run: |
+          set -euo pipefail
+          SRC=aegis-workstation/templates/workstation
+          DST=aegis-cli
+          cp "${SRC}/bin/aegis" "${DST}/bin/aegis"
+          cp "${SRC}/bin/aegis.cmd" "${DST}/bin/aegis.cmd"
+          cp "${SRC}/bin/aegis.ps1" "${DST}/bin/aegis.ps1"
+          cp "${SRC}/bin/aegis-license.js" "${DST}/bin/aegis-license.js"
+          cp "${SRC}/bin/aegis-activate.js" "${DST}/bin/aegis-activate.js"
+          cp "${SRC}/bin/aegis-license-api.js" "${DST}/bin/aegis-license-api.js"
+          cp "${SRC}/bin/aegis-secret-protect.js" "${DST}/bin/aegis-secret-protect.js"
+          cp "${SRC}/bin/aegis-telemetry.js" "${DST}/bin/aegis-telemetry.js"
+          cp "${SRC}/config/license-keys.json" "${DST}/config/license-keys.json"
+
+      - name: Commit and push if changed
+        working-directory: aegis-cli
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet -- bin/ config/; then
+            echo "already in sync, nothing to do"
+            exit 0
+          fi
+          SOURCE_SHA="$(git -C ../aegis-workstation rev-parse --short HEAD)"
+          git add bin/ config/
+          git commit -m "fix(sync): update launcher from aegis-workstation@${SOURCE_SHA}"
+          git push
