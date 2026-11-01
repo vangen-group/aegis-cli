@@ -7,12 +7,13 @@
 # Bash's bash.exe — they must never duplicate any logic from here.
 #
 # Locating the stack: AEGIS_WORKSTATION_DIR must point at the folder that
-# contains this workstation's .devcontainer/ (the documented default matches
-# docs/10-workstation.md, section 5: templates/workstation/ inside this same
-# repository, once it lives at C:\MEMORIES\aegis-workstation). No path in
-# this script is hardcoded to a specific drive letter or clone location
-# beyond that documented default — override AEGIS_WORKSTATION_DIR if this
-# repository was cloned somewhere else.
+# contains this workstation's .devcontainer/. Every real invocation runs in
+# client mode (AEGIS_CLI_MODE defaults to "client", see below) and resolves
+# this from the signed bundle `aegis install` places in AEGIS_INSTALL_DIR —
+# there is no baked-in checkout path, on any drive letter, for a client to
+# fall back to. AEGIS_REPO_WORKSTATION_DIR is a dev-only override
+# (AEGIS_CLI_MODE=dev) for whoever is developing this repository itself; it
+# has no default and must be set explicitly.
 #
 # Usage: aegis <command> [args...]
 #   up                     Download the licensed image from the registry, verify
@@ -124,13 +125,13 @@
 #
 # Environment:
 #   AEGIS_WORKSTATION_DIR   Folder containing .devcontainer/docker-compose.yml
-#                           for this workstation. Default:
-#                           /c/MEMORIES/aegis-workstation/templates/workstation
-#                           (docs/10-workstation.md, section 5:
-#                           templates/workstation/ inside this repository,
-#                           once it lives at C:\MEMORIES\aegis-workstation)
-#                           — override if this repository was cloned to a
-#                           different location.
+#                           for this workstation. No default of its own: an
+#                           explicit value always wins, otherwise the copy
+#                           `aegis install` placed in AEGIS_INSTALL_DIR,
+#                           otherwise (AEGIS_CLI_MODE=dev only)
+#                           AEGIS_REPO_WORKSTATION_DIR. A client has neither a
+#                           checkout nor dev mode, so it always resolves
+#                           through AEGIS_INSTALL_DIR.
 #   AEGIS_SERVICES_NETWORK  Default network name for `aegis connect`.
 #   GH_TOKEN, ANTHROPIC_API_KEY, GIT_AUTHOR_*, GIT_COMMITTER_*
 #                           Forwarded into the container ONLY via
@@ -179,9 +180,10 @@
 #                           /bundle.tar.gz. Default: ${AEGIS_IMAGE_REPO}-bundle.
 #   AEGIS_BUNDLE_TAG        Tag of that bundle image. Default: latest.
 #   AEGIS_REPO_WORKSTATION_DIR
-#                           Where the repository keeps the template (also the
-#                           fallback when nothing is installed). Default:
-#                           /c/MEMORIES/aegis-workstation/templates/workstation.
+#                           Where a checkout of this repository keeps the
+#                           template. No default; only consulted in
+#                           AEGIS_CLI_MODE=dev, for developing this repository
+#                           itself. A client never sets this.
 #   AEGIS_SANDBOX_DIR       Folder containing the sandbox .devcontainer/.
 #                           Priority, like AEGIS_WORKSTATION_DIR: this explicit
 #                           value > an installed copy (AEGIS_SANDBOX_INSTALL_DIR)
@@ -271,10 +273,9 @@ set -euo pipefail
 # into AEGIS_INSTALL_DIR, which is not mounted anywhere (not even read-only) —
 # and from then on the launcher prefers that copy over the repository.
 AEGIS_INSTALL_DIR="${AEGIS_INSTALL_DIR:-$HOME/.aegis/workstation}"
-# Where the repository keeps it (docs/10-workstation.md, section 5). Also the
-# source `aegis install` copies from, unless AEGIS_INSTALL_SOURCE/--from says
-# otherwise.
-AEGIS_REPO_WORKSTATION_DIR="${AEGIS_REPO_WORKSTATION_DIR:-/c/MEMORIES/aegis-workstation/templates/workstation}"
+# No default: only a developer of this repository itself, running in
+# AEGIS_CLI_MODE=dev, sets this. A client has no checkout to point at.
+AEGIS_REPO_WORKSTATION_DIR="${AEGIS_REPO_WORKSTATION_DIR:-}"
 # OD1.2: the client install source, used only when no checkout/--from is given.
 # Kept as data (empty by default) so a build without a published channel refuses
 # instead of guessing, and tests can point it at a local file:// bundle.
@@ -282,16 +283,26 @@ AEGIS_INSTALL_URL="${AEGIS_INSTALL_URL:-}"
 AEGIS_INSTALL_SHA256="${AEGIS_INSTALL_SHA256:-}"
 
 # Priority: an explicit AEGIS_WORKSTATION_DIR always wins (development, tests,
-# other checkouts); otherwise the installed copy if there is one; otherwise the
-# repository.
+# other checkouts); otherwise the installed copy if there is one; otherwise,
+# ONLY in AEGIS_CLI_MODE=dev, an explicitly-set checkout. AEGIS_CLI_MODE
+# defaults to "client" below, read here inline (it is not resolved yet at this
+# point in the script) because every real invocation — including the owner's
+# own machine — runs as a client with no checkout to fall back to; defaulting
+# this to a developer's local path would leak it into a client's output
+# (see the version-missing warning below, which reads AEGIS_WORKSTATION_DIR).
 if [[ -n "${AEGIS_WORKSTATION_DIR:-}" ]]; then
     AEGIS_CONFIG_SOURCE="explicit (AEGIS_WORKSTATION_DIR)"
 elif [[ -f "${AEGIS_INSTALL_DIR%/}/.devcontainer/docker-compose.yml" ]]; then
     AEGIS_WORKSTATION_DIR="${AEGIS_INSTALL_DIR%/}"
     AEGIS_CONFIG_SOURCE="installed"
-else
+elif [[ "${AEGIS_CLI_MODE:-client}" != "client" && -n "${AEGIS_REPO_WORKSTATION_DIR:-}" ]]; then
     AEGIS_WORKSTATION_DIR="${AEGIS_REPO_WORKSTATION_DIR}"
     AEGIS_CONFIG_SOURCE="repository"
+else
+    # Not installed yet (and no dev checkout applies): report the destination
+    # `aegis install` will use, never a path nothing on this machine has.
+    AEGIS_WORKSTATION_DIR="${AEGIS_INSTALL_DIR%/}"
+    AEGIS_CONFIG_SOURCE="not installed"
 fi
 
 COMPOSE_FILE="${AEGIS_WORKSTATION_DIR%/}/.devcontainer/docker-compose.yml"
@@ -339,9 +350,12 @@ if [[ -n "${AEGIS_SANDBOX_DIR:-}" ]]; then
 elif [[ -f "${AEGIS_SANDBOX_INSTALL_DIR%/}/.devcontainer/docker-compose.yml" ]]; then
     AEGIS_SANDBOX_DIR="${AEGIS_SANDBOX_INSTALL_DIR%/}"
     AEGIS_SANDBOX_SOURCE="installed"
-else
+elif [[ "${AEGIS_CLI_MODE:-client}" != "client" && -n "${AEGIS_REPO_WORKSTATION_DIR:-}" ]]; then
     AEGIS_SANDBOX_DIR="${AEGIS_REPO_SANDBOX_DIR}"
     AEGIS_SANDBOX_SOURCE="repository"
+else
+    AEGIS_SANDBOX_DIR="${AEGIS_SANDBOX_INSTALL_DIR%/}"
+    AEGIS_SANDBOX_SOURCE="not installed"
 fi
 
 SANDBOX_COMPOSE_FILE="${AEGIS_SANDBOX_DIR%/}/.devcontainer/docker-compose.yml"
@@ -361,9 +375,12 @@ if [[ -n "${AEGIS_BUILD_WINDOWS_DIR:-}" ]]; then
 elif [[ -f "${AEGIS_BUILD_WINDOWS_INSTALL_DIR%/}/Dockerfile" ]]; then
     AEGIS_BUILD_WINDOWS_DIR="${AEGIS_BUILD_WINDOWS_INSTALL_DIR%/}"
     AEGIS_BUILD_WINDOWS_SOURCE="installed"
-else
+elif [[ "${AEGIS_CLI_MODE:-client}" != "client" && -n "${AEGIS_REPO_WORKSTATION_DIR:-}" ]]; then
     AEGIS_BUILD_WINDOWS_DIR="${AEGIS_REPO_BUILD_WINDOWS_DIR}"
     AEGIS_BUILD_WINDOWS_SOURCE="repository"
+else
+    AEGIS_BUILD_WINDOWS_DIR="${AEGIS_BUILD_WINDOWS_INSTALL_DIR%/}"
+    AEGIS_BUILD_WINDOWS_SOURCE="not installed"
 fi
 
 BUILD_WINDOWS_IMAGE_REPO="aegis-build-windows"
@@ -539,11 +556,6 @@ esac
 # got it. Prints the version on stdout; returns non-zero when it cannot be read.
 _product_version() {
     local file="${AEGIS_WORKSTATION_DIR%/}/version.json" v=""
-    # The standalone client CLI (no configuration tree yet) ships its version
-    # next to the launcher as aegis-version.json.
-    if [[ ! -f "$file" && -f "${SCRIPT_DIR%/}/aegis-version.json" ]]; then
-        file="${SCRIPT_DIR%/}/aegis-version.json"
-    fi
     if [[ -f "$file" ]]; then
         v="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([0-9][0-9A-Za-z.+-]*\)".*/\1/p' "$file" | head -n1)"
     fi
@@ -3569,6 +3581,10 @@ templates/workstation/profiles templates/workstation/AGENTS.md
 templates/sandbox templates/build-windows scripts"
 
 update_repo_root() {
+    # AEGIS_REPO_WORKSTATION_DIR has no default (dev-mode-only, see above): an
+    # empty value must fail closed here, never resolve "/../.." to the
+    # filesystem root.
+    [[ -n "${AEGIS_REPO_WORKSTATION_DIR:-}" ]] || return 1
     (cd "${AEGIS_REPO_WORKSTATION_DIR%/}/../.." && pwd)
 }
 
@@ -6778,9 +6794,9 @@ build_dev_image() {
     # (see _to_native_path above), and node — not bash — spawns docker from
     # there: no MSYS conversion may interfere in between. CAREFUL: that also
     # means EVERY path in this call must already be native — including the
-    # helper's own path, because AEGIS_WORKSTATION_DIR's default is the
-    # POSIX-shaped /c/MEMORIES/... and node would otherwise resolve
-    # /c/... relative to the current drive.
+    # helper's own path, because a dev-mode AEGIS_WORKSTATION_DIR is
+    # POSIX-shaped (e.g. /c/...) and node would otherwise resolve it
+    # relative to the current drive.
     local -a build_cmd=(docker compose -f "$(_to_native_path "$COMPOSE_FILE")" build "$DEV_SERVICE")
     # The credential the build runs with, when it needs one (the client branch
     # below explains it). Both stay empty on every other path, so the build runs
