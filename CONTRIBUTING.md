@@ -10,6 +10,13 @@ Thank you for your interest in contributing to Aegis CLI! This document outlines
 
 ## Getting Started
 
+> **`bin/` and `config/license-keys.json` are synced automatically from
+> aegis-workstation** (`.github/workflows/sync-launcher.yml`) and get
+> overwritten on the next sync — a PR touching those files here will be
+> silently reverted. See [`docs/INTEGRATION.md`](docs/INTEGRATION.md). The
+> rest of this repo (`install.sh`, workflows, docs) is edited here directly;
+> the guidelines below still apply to those.
+
 1. **Fork or create a branch** from `master`
    ```bash
    git checkout -b feat/your-feature-name

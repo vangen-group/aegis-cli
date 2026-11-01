@@ -1,24 +1,34 @@
 # Integration with Aegis Workstation
 
-Aegis CLI is the **authoritative source and distribution channel** for the
-`aegis` launcher. Since the cli-standalone-distribution migration
-(2026-10-29/30), aegis-workstation does not bundle, sync, or carry a copy of
-it at all — it is a fully independent, pull-based relationship:
+Aegis CLI is the **distribution and release channel** for the `aegis`
+launcher. A client never reads a copy bundled by aegis-workstation — it
+always installs/updates from this repo's own signed releases:
 
 ```
 aegis-cli                                  aegis-workstation
-├─ Source of truth for the launcher        ├─ Owns the docker-compose config,
-├─ Own signed releases (cosign keyless)    │  the dev image, the bundle of
-├─ Own release-please version cadence      │  CONFIGURATION (never the CLI)
-└─ install.sh: first-time install          └─ `aegis update` downloads the
+├─ Signs and publishes releases            ├─ Where the launcher is actually
+│  (cosign keyless)                        │  developed and tested: owns the
+├─ Own release-please version cadence      │  docker-compose config, the dev
+└─ install.sh: first-time install          │  image, and the ~320 tests that
+                                            │  exercise bin/aegis against them
+                                            └─ `aegis update` downloads the
                                                latest aegis-cli release itself
                                                (verify, then install) — it
                                                never reads a bundled copy
 ```
 
-There is no webhook, no sync script, and no step where aegis-workstation's
-CI pulls this repo's code in. The two repos release on their own schedules;
-the only coupling is at runtime, inside the already-running `aegis` binary.
+At runtime there is no webhook, no sync, no coupling at all — a client's
+`aegis update` just downloads the latest signed release from this repo.
+
+Maintaining this repo's `bin/`/`config/license-keys.json` is a different
+matter: `.github/workflows/sync-launcher.yml` pulls the current files from
+aegis-workstation (read-only token, scoped to that one repo) and commits
+here if they changed, which then flows through release-please like any
+other `fix:`. This repo is never hand-edited to fix launcher behavior —
+edit aegis-workstation and let the sync bring it here (see that repo's
+`docs/11-aegis-cli.md`). A future Go rewrite (v1.0.0) removes this shared
+file entirely; duplicating the docker-compose/Dockerfile/templates here
+just to avoid it sooner isn't worth it.
 
 ## How a client actually gets the CLI
 
@@ -52,23 +62,36 @@ Release cadence here is automated by
 
 ## Making changes
 
+Do not hand-edit `bin/`/`config/license-keys.json` in this repo — the next
+`sync-launcher.yml` run overwrites them from aegis-workstation and silently
+drops the edit. Make the change there instead:
+
 ```bash
-cd aegis-cli
+cd aegis-workstation
 
-# Edit the CLI
-vim bin/aegis
+# Edit the launcher
+vim templates/workstation/bin/aegis
 
-# Test locally
-bash tests/update-uiux.test.sh
+# Run its real test suite (compose/Dockerfile-backed)
+node --test test/*.test.js
 
-# Verify syntax
-bash -n bin/aegis
-
-# Commit with Conventional Commits — release-please reads this
-git add bin/aegis
-git commit -m "feat: improve update UX"
+# Commit and push to main
+git add templates/workstation/bin/aegis
+git commit -m "fix(workstation): improve update UX"
 git push
 ```
+
+Then bring it here — either wait for the daily sync, or trigger it now:
+
+```bash
+gh workflow run sync-launcher.yml --repo vangen-group/aegis-cli
+```
+
+If it finds a diff, it commits `fix(sync): ...` to `master`, which
+release-please turns into a release PR the same way any other `fix:` would.
+Files outside `bin/`/`config/license-keys.json` (this repo's own
+`install.sh`, CI/release workflows, docs, `CONTRIBUTING.md`) are genuinely
+this repo's own and are edited here directly, same as always.
 
 Merging the release-please PR tags, creates the GitHub Release, and
 triggers `.github/workflows/release.yml` to build, sign, and publish the
