@@ -3,6 +3,11 @@ name: Release Please
 on:
   push:
     branches: [master]
+  # sync-launcher.yml's commits are GITHUB_TOKEN-authored, so they don't
+  # trigger this workflow's push listener either (same anti-recursion rule
+  # as the tag trigger below) -- this lets a sync be followed by a manual run
+  # instead of silently never opening a release PR.
+  workflow_dispatch: {}
 
 # The default GITHUB_TOKEN must be allowed to write. On a private repository this
 # requires Settings -> Actions -> General -> Workflow permissions to be set to
