@@ -2,6 +2,13 @@
 
 All notable changes to the Aegis CLI are documented here.
 
+## [0.2.17](https://github.com/vangen-group/aegis-cli/compare/v0.2.16...v0.2.17) (2026-11-04)
+
+
+### Bug Fixes
+
+* **sync:** update launcher from aegis-workstation@3ce6e63 ([980a6a1](https://github.com/vangen-group/aegis-cli/commit/980a6a19c5a79fc9a694c636aeb6c16a2ecef219))
+
 ## [0.2.16](https://github.com/vangen-group/aegis-cli/compare/v0.2.15...v0.2.16) (2026-11-04)
 
 
