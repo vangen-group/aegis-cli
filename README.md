@@ -2,7 +2,7 @@
 
 The modern command-line interface for **Aegis Workstation** — a hermetic dev environment for supervised AI agents with secure secrets, network isolation, and detailed audit trails.
 
-![Version](https://img.shields.io/badge/version-0.2.0-blue)
+![Version](https://img.shields.io/badge/version-0.2.15-blue)
 ![License](https://img.shields.io/badge/license-Proprietary-red)
 ![Status](https://img.shields.io/badge/status-Active-green)
 
@@ -16,21 +16,33 @@ The modern command-line interface for **Aegis Workstation** — a hermetic dev e
 - ✅ **Clear feedback** — Checkmarks and summary for each step
 
 ### Complete CLI
-- 🚀 **Workstation management** — Up, down, status, audit
-- 🔧 **Environment control** — Add/remove languages and tools
-- 🔒 **Secrets handling** — Secure credential storage and injection
-- 📦 **Backup/restore** — Full workstation snapshots
-- 🔌 **Network tools** — Tunneling, allowlist, SSH certificates
+- 🚀 **Workstation management** — `up`, `down`, `stop`, `status`, `audit`
+- 🔧 **Environment control** — `add`/`remove` languages and tools, `env list`/`env rebuild`
+- 🔒 **Secrets handling** — vault-backed `secret list/show/put/edit/rm`, session injection via `--secret`/`--env`
+- 📦 **Backup/restore** — `backup`, `restore`, `export`, `import` (per-volume)
+- 🔌 **Network tools** — `allow` (egress allowlist), `connect`/`disconnect` (service networks), tunnels in `shell`/`herdr`
+- 🧪 **Sandbox** — `aegis sandbox <repo>` for untrusted code, `promote` to move it into `code/`
+- 🪟 **Windows** — `aegis.cmd`/`aegis.ps1` wrappers, `build windows` (Inno Setup installers)
+- 📄 **Licensing** — `aegis license activate/renew/heartbeat/retire` (alias `aegis account`), offline verification, client license gating
 
 ## Quick Start
 
 ### Installation
 
 ```bash
-cp bin/aegis ~/bin/
-chmod +x ~/bin/aegis
+# First install: the signed standalone installer (verifies with cosign before writing anything)
+curl -fsSL https://raw.githubusercontent.com/vangen-group/aegis-cli/master/install.sh | bash
+# Pin a version with: AEGIS_CLI_VERSION=v0.2.15 ...
+
+# Later updates are handled by the CLI itself:
+aegis update
+
 aegis --version
 ```
+
+> `bin/aegis` and `config/license-keys.json` are synced into this repo from
+> aegis-workstation by CI (`sync-launcher.yml`); never hand-edit them here.
+> See [`docs/INTEGRATION.md`](docs/INTEGRATION.md).
 
 ### First Update
 
@@ -65,13 +77,24 @@ aegis add tool gh                     # Add GitHub CLI
 ```
 aegis-cli/
 ├── bin/
-│   └── aegis                  # Main CLI (8400+ lines, bash)
+│   ├── aegis                  # Main CLI (8700+ lines, bash; synced from aegis-workstation)
+│   ├── aegis-license.js       # License verification/report helpers (node)
+│   ├── aegis-activate.js      # Device activation (node)
+│   ├── aegis-secret-protect.js # Secret encryption helpers (node)
+│   ├── aegis-telemetry.js     # Opt-in telemetry sender (node)
+│   ├── aegis.cmd / aegis.ps1  # Windows wrappers
+├── config/
+│   └── license-keys.json      # Known license key ids (synced from aegis-workstation)
 ├── docs/
 │   ├── UPDATE_UX.md          # Progress bar feature docs
-│   └── QUICK_REFERENCE.md    # Command cheatsheet
+│   ├── QUICK_REFERENCE.md    # Command cheatsheet
+│   ├── INTEGRATION.md        # How this repo relates to aegis-workstation
+│   └── RELEASE_DEMO.md       # Release walkthrough
 ├── tests/
 │   └── update-uiux.test.sh   # Unit tests (15+ cases)
-├── scripts/                   # Helper utilities (planned)
+├── install.sh                 # Signed standalone installer (cosign-verified)
+├── scripts/
+│   └── build-release-tarball.sh  # Release tarball builder
 ├── VERSION                    # Semantic version (release-please managed)
 ├── CHANGELOG.md              # Complete change history
 ├── CONTRIBUTING.md           # Contribution guidelines
@@ -145,8 +168,9 @@ $ tail -f ~/.aegis/update.log
 
 This project follows **[Semantic Versioning](https://semver.org/)**:
 
-- **v0.2.0** — Current: Progress bars, logging, error recovery
-- **v0.3.0** — Planned: Real speed tracking, parallel operations
+- **v0.2.15** — Current: progress bars, logging, error recovery, licensing
+  (activate/renew/heartbeat/retire, offline verification), standalone signed
+  installer, Windows support
 - **v1.0.0** — Planned: Go rewrite, Bubble Tea TUI
 
 See [`CHANGELOG.md`](CHANGELOG.md) for complete history.
@@ -180,12 +204,6 @@ Automated by [release-please](https://github.com/googleapis/release-please) — 
 Conventional Commits, merge the release PR it keeps open, done.
 
 ## Roadmap
-
-### v0.3.0 (Planned)
-- [ ] Real download speed tracking from Docker
-- [ ] Parallel progress bars for concurrent operations
-- [ ] Rollback option on failure
-- [ ] Update notifications/scheduling
 
 ### v1.0.0 (Planned)
 - [ ] Go rewrite with Bubble Tea TUI
