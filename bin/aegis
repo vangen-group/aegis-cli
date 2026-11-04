@@ -5924,9 +5924,11 @@ cmd_install() {
             _client_fetch_registry_bundle || exit 1
             src="$AEGIS_INSTALL_FETCHED_SRC"
         fi
-        # The bundle (and any checkout-like source) keeps the sandbox template
-        # next to the workstation one; an explicit override still wins.
+        # The bundle (and any checkout-like source) keeps the sandbox and
+        # build-windows templates next to the workstation one; an explicit
+        # override still wins for either.
         AEGIS_INSTALL_SANDBOX_SOURCE="${AEGIS_INSTALL_SANDBOX_SOURCE:-$(dirname "$src")/sandbox}"
+        AEGIS_INSTALL_BUILD_WINDOWS_SOURCE="${AEGIS_INSTALL_BUILD_WINDOWS_SOURCE:-$(dirname "$src")/build-windows}"
     else
         src="${source_override:-${AEGIS_INSTALL_SOURCE:-$AEGIS_REPO_WORKSTATION_DIR}}"
     fi
@@ -5988,9 +5990,7 @@ cmd_install() {
             log "dry run: a fresh install would also create $(tildify "$AEGIS_ENV_FILE") with every tool off."
         fi
         install_sandbox_template "1" "${force}" || exit 1
-        if [[ "$AEGIS_CLI_MODE" != "client" ]]; then
-            install_build_windows_template "1" "${force}" || exit 1
-        fi
+        install_build_windows_template "1" "${force}" || exit 1
         log "dry run: nothing was copied."
         return 0
     fi
@@ -6070,12 +6070,10 @@ cmd_install() {
     esac
 
     install_sandbox_template "0" "${force}" || exit 1
-    # The build-windows template is developer-only and is not in the client
-    # bundle; skipping it also keeps the owner's checkout path out of the
-    # client's install output.
-    if [[ "$AEGIS_CLI_MODE" != "client" ]]; then
-        install_build_windows_template "0" "${force}" || exit 1
-    fi
+    # `aegis build windows` is a client command now (it has no developer-only
+    # dependency, and the client bundle carries the template) — installed
+    # unconditionally, same as the sandbox template above.
+    install_build_windows_template "0" "${force}" || exit 1
 }
 
 cmd_status() {
@@ -7895,6 +7893,14 @@ Files and backups
   export <path> [--dest <dir>]      Copy a file out of the workstation
   import <host-path> <path>         Copy a file into the workstation
 
+Windows installers
+  build windows <path>.iss    Compile an Inno Setup script (code/<Cliente>/<repo>/...
+                              or memories/<proyecto>/...) in a throwaway Wine
+                              container: no network, read-only, only that project
+                              mounted (Docker Engine 26+). The .exe lands in
+                              Output/ next to the .iss; take it out with `aegis export`
+  build clean                 Remove the build-windows image (rebuilt on next use)
+
 Databases
   connect [network]           Join an internal network to reach database containers
   disconnect [network]        Leave it
@@ -8532,9 +8538,10 @@ main() {
         # (aegis-dev), licensed or not.
         # add/remove environment|tool became client commands (client-license-
         # surface S2): they build on the verified base by themselves. The explicit
-        # `env rebuild` stays the owner's (user decision 2026-10-14).
+        # `env rebuild` stays the owner's (user decision 2026-10-14). `build`
+        # (Windows installers) became a client command too — it needs no
+        # dev-only dependency, and the bundle carries its template.
         case "$sub" in
-            build) _client_reject "$sub" ;;
             env)
                 [[ "${1:-list}" == "rebuild" ]] && _client_reject "env rebuild"
                 ;;
