@@ -2,8 +2,15 @@
 //
 // Opt-in usage telemetry for the aegis launcher. OFF unless the user turned it
 // on, and AEGIS_TELEMETRY=off always wins. One OTLP/HTTP JSON POST per finished
-// command, to an endpoint the user chose. No dependencies: it ships next to
+// command, to Vangen's own collector. No dependencies: it ships next to
 // bin/aegis, which is copied standalone into ~/bin.
+//
+// 2026-11-04: the endpoint and ingest token are fixed (DEFAULT_ENDPOINT/
+// DEFAULT_TOKEN below) -- every install sends to the same place, and a client
+// only has the power to turn it on or off, never to choose a destination.
+// --endpoint/--token/--token-stdin still exist on `enable` (tests use them,
+// and they are a reasonable escape hatch), but the client command and its
+// help never mention them.
 //
 // What is sent: a fixed command name, the outcome and exit code, how long it
 // took, the launcher version, the OS family, a random id made when telemetry
@@ -13,7 +20,7 @@
 //
 //   aegis-telemetry.js send (--command <name> | --first <word> [--second <word>]) --exit-code <n> --duration-ms <n> [--workstation-dir <dir>]
 //   aegis-telemetry.js status
-//   aegis-telemetry.js enable --endpoint <url> (--token <t> | --token-stdin)
+//   aegis-telemetry.js enable [--endpoint <url> (--token <t> | --token-stdin)]
 //   aegis-telemetry.js disable
 
 const fs = require('node:fs');
@@ -23,6 +30,12 @@ const crypto = require('node:crypto');
 
 const TIMEOUT_MS = 3000;
 const DURATION_BOUNDS = [0.5, 1, 2, 5, 10, 30, 60, 120, 300, 600];
+// The ingest token is write-only and anonymous data (see the header comment):
+// the same threat model as a public Sentry DSN or a PostHog write key. Baked
+// into this file because it ships inside aegis-cli's public source either
+// way; rotate it (here and on the collector) if it is ever abused.
+const DEFAULT_ENDPOINT = 'https://vangen-telemetry-ingest.up.railway.app';
+const DEFAULT_TOKEN = 'F6WX6hIFfivzRCdqGElzAiR_7e7neQZNdt3ARoH4wn8';
 
 // The only command names that ever leave the machine. Derived from the real
 // dispatchers in bin/aegis; anything else is reported as "other".
@@ -255,14 +268,15 @@ function status() {
 }
 
 function enable(o) {
-    const bad = endpointError(o.endpoint || '');
+    const endpoint = o.endpoint || DEFAULT_ENDPOINT;
+    const token = o.token || DEFAULT_TOKEN;
+    const bad = endpointError(endpoint);
     if (bad) return { ok: false, message: bad };
-    if (!o.token) return { ok: false, message: 'a token is required (--token-stdin is preferred)' };
     const cfg = readConfig();
     writeConfig({
         enabled: true,
-        endpoint: o.endpoint.replace(/\/+$/, ''),
-        token: o.token,
+        endpoint: endpoint.replace(/\/+$/, ''),
+        token,
         hostId: cfg.hostId || crypto.randomUUID(),
     });
     return { ok: true, message: 'telemetry is on' };
@@ -315,4 +329,7 @@ if (require.main === module) {
     main(process.argv.slice(2)).then((code) => { process.exitCode = code; }, () => { process.exitCode = 0; });
 }
 
-module.exports = { buildPayload, classifyCommand, vocabulary, languagesFromManifest, launcherVersion, send, status, enable, disable, osType, endpointError, DURATION_BOUNDS };
+module.exports = {
+    buildPayload, classifyCommand, vocabulary, languagesFromManifest, launcherVersion, send, status, enable, disable,
+    osType, endpointError, DURATION_BOUNDS, DEFAULT_ENDPOINT, DEFAULT_TOKEN,
+};

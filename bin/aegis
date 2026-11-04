@@ -7758,9 +7758,7 @@ Databases
 
 Telemetry (opt-in, off by default)
   telemetry status            Whether it is on, where it goes (never the token)
-  telemetry on --endpoint <url> --token-stdin
-                              Turn it on; read the token from stdin (preferred:
-                              a --token <t> argument is visible in the process list)
+  telemetry on                Turn it on: sends to Vangen's fixed collector
   telemetry off               Turn it off and forget the token
                               Sent: command name, ok/error, duration, launcher
                               version, OS, a random install id, language versions.
@@ -7907,6 +7905,7 @@ Databases
 
 Telemetry (opt-in, off by default)
   telemetry status            Whether it is on, where it goes (never the token)
+  telemetry on                Turn it on: sends to Vangen's fixed collector
   telemetry off               Turn it off and forget the token
 
 Examples
@@ -8544,9 +8543,6 @@ main() {
         case "$sub" in
             env)
                 [[ "${1:-list}" == "rebuild" ]] && _client_reject "env rebuild"
-                ;;
-            telemetry)
-                [[ "${1:-status}" == "on" ]] && _client_reject "telemetry on"
                 ;;
             up)
                 local _a
