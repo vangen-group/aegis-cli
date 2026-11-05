@@ -100,7 +100,11 @@ test('the plan is sectioned into named steps (T8) with the workstation handoff',
             const plan0 = JSON.parse(spawnSync('curl', ['-s', '-H', `Cookie: aegis_install=${cookie}`, base + '/api/plan'], { encoding: 'utf8' }).stdout);
             assert.ok(Array.isArray(plan0.prereqs), 'the plan must include the prereq checks');
             assert.ok(Array.isArray(plan0.sections) && plan0.sections.length >= 4, 'the plan must be sectioned into named steps');
-            assert.match(plan0.sections[3].detail, /aegis install/, 'the last section hands off to the workstation journey');
+            assert.ok(plan0.sections.some((s) => /aegis install/.test(s.detail)), "the workstation section hands off to aegis install");
+            // The volume stage sits BEFORE the CLI install when missing.
+            const vi = plan0.sections.findIndex((s) => /volumen|volume/i.test(s.title));
+            const ii = plan0.sections.findIndex((s) => /aegis install/.test(s.detail));
+            assert.ok(vi !== -1 && ii !== -1 && vi < ii, 'the volume section must come before the CLI install section');
             assert.ok(typeof plan0.next === 'string' && plan0.next.includes('aegis install'), 'the plan must name the next journey (T3)');
 
             const plan = JSON.parse(spawnSync('curl', ['-s', '-H', `Cookie: aegis_install=${cookie}`, base + '/api/plan'], { encoding: 'utf8' }).stdout);

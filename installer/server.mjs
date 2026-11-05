@@ -104,6 +104,18 @@ const plan = (lang) => {
   const sections = p.sections.map((sec) => ({
     title: pick(sec.title), needs: pick(sec.needs), detail: pick(sec.detail),
   }));
+  const vol = volumeState();
+  if (vol.state === "missing") {
+    // The volume stage comes BEFORE the CLI install (owner decision): the
+    // client provisions first, then installs.
+    sections.splice(2, 0, {
+      title: lang === "es" ? "Crear tu volumen seguro LUKS" : "Create your secure LUKS volume",
+      needs: lang === "es" ? "una frase de paso (solo tuya, se escribe en la consola)" : "a passphrase (yours only, typed in the console)",
+      detail: lang === "es"
+        ? "El wizard ejecuta los 5 pasos de aprovisionamiento (imagen, loop, formato LUKS, montaje) — la frase de paso se escribe SOLO en la consola y nunca atraviesa el wizard."
+        : "The wizard runs the 5 provisioning steps (image, loop, LUKS format, mount) — the passphrase is typed ONLY in the console and never crosses the wizard.",
+    });
+  }
   return {
     platform: PLATFORM,
     lang,
