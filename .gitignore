@@ -27,3 +27,4 @@ dist/
 vendor/
 go.sum
 dist/
+installer/telemetry-choice.json
