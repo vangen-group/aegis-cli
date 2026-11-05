@@ -38,6 +38,8 @@
   guía paso a paso del humano.
 - T3 [S4] Pantalla final: opt-in telemetry + "siguiente: aegis install
   <license-id>" (primer viaje, client-redesign L4.2).
+- T11 HECHO (PR #26): README con el camino de instalación sin terminal y
+  docs/INSTALLER.md con la arquitectura completa del wizard.
 - T4 LUKS: detección de los tres estados del volumen (S3) — fase posterior.
 - T6 [S2] HECHO: el wizard chequea Docker Desktop (probe `docker info`) en las
   tres plataformas — responde a "instalado" y "corriendo" a la vez; hint
