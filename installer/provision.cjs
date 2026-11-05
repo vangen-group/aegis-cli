@@ -16,7 +16,9 @@ const paths = () => ({
 const commandsFor = () => {
     const { img, mnt, mapper } = paths();
     return {
-        'create-image': { consent: false, argv: ['truncate', '-s', '150G', img] },
+        // Test volumes are light (64M — mkfs on them is instant); production
+        // keeps the docs/17 150G sparse image.
+        'create-image': { consent: false, argv: ['truncate', '-s', isTest() ? '64M' : '150G', img] },
         'associate-loop': { consent: false, argv: ['sudo', 'losetup', '--find', '--show', img] },
         'format-luks': { consent: true, argv: ['sudo', 'cryptsetup', 'luksFormat', process.env.AEGIS_VOLUME_LOOP || '<LOOP>'] },
         'open-mount': { consent: false, argv: ['sudo', 'sh', '-c', `cryptsetup luksOpen ${process.env.AEGIS_VOLUME_LOOP || '<LOOP>'} ${mapper} && mkfs.ext4 /dev/mapper/${mapper} && mkdir -p ${mnt} && mount /dev/mapper/${mapper} ${mnt} && chown $(id -u):$(id -g) ${mnt}`] },
