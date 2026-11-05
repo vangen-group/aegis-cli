@@ -23,7 +23,8 @@ test('install.sh defines the step protocol and runs the network-free steps under
 
 test('the step protocol covers all six install steps in order', () => {
     const src = require('node:fs').readFileSync(path.join(REPO_ROOT, 'install.sh'), 'utf8');
-    const main = src.slice(src.indexOf('main() {'));
+    const start = src.indexOf('main() {');
+    const main = src.slice(start, src.indexOf('\n}', start));
     const calls = main.split('\n')
         .filter((line) => line.startsWith('    step_'))
         .map((line) => line.trim().replace('step_', '').replace(/_/g, '-'));
