@@ -31,13 +31,13 @@ function volumeState({ runner } = {}) {
     const { img: IMG, mnt: MNT } = paths();
     try {
         if (run('test', ['-f', IMG]).status !== 0) {
-            return { state: 'missing', img: IMG, mnt: MNT };
+            return { state: 'missing', img: IMG, mnt: MNT, isTest: paths().isTest };
         }
         if (run('mountpoint', ['-q', MNT]).status === 0) {
-            return { state: 'mounted', img: IMG, mnt: MNT };
+            return { state: 'mounted', img: IMG, mnt: MNT, isTest: paths().isTest };
         }
         if (run('sudo', ['losetup', '-j', IMG]).status === 0 && run('sudo', ['losetup', '-j', IMG]).stdout.trim() !== '') {
-            return { state: 'sealed', img: IMG, mnt: MNT };
+            return { state: 'sealed', img: IMG, mnt: MNT, isTest: paths().isTest };
         }
         // Image exists but no loop association: provisioned, sealed at rest.
         return { state: 'sealed', img: IMG, mnt: MNT };
