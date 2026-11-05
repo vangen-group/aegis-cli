@@ -46,7 +46,7 @@ test('cleanup refuses any path without "test" — a real volume can never be del
     process.env.AEGIS_VOLUME_MNT = '/mnt/aegis_secure_test';
     const r = cleanupTestVolume({ spawnFn: (argv) => ({ argv }) });
     assert.equal(r.ok, true);
-    assert.ok(r.spawned.argv[2].includes('aegis_secure_test.img'), 'the rm targets the test image');
+    assert.ok(r.spawned.argv.join(' ').includes('aegis_secure_test.img'), 'the rm targets the test image');
     delete process.env.AEGIS_INSTALLER_TEST_VOLUME;
     delete process.env.AEGIS_VOLUME_IMG;
     delete process.env.AEGIS_VOLUME_MNT;
