@@ -132,7 +132,14 @@ function startRun(){
           el('retry').hidden=false;}}
     });
     fetch('/api/progress').then(r=>r.json()).then(p=>{
-      const box=el('steps');box.innerHTML='';
+      // Update rows IN PLACE: rebuilding the list every poll restarts the
+      // spinner's CSS animation, which read as an ugly jump (L10).
+      const box=el('steps');
+      const prev=(box.dataset.fingerprint||'').split(',');
+      const next=(p.steps||[]).map(st=>st.status);
+      const unchanged=prev.length===next.length&&prev.every((v,i)=>v===next[i]);
+      if(unchanged)return;
+      box.innerHTML='';
       for(const st of (p.steps||[])){
         const li=document.createElement('li');li.className='step step-'+st.status;
         const icon=document.createElement('span');icon.className='step-icon';
@@ -142,6 +149,7 @@ function startRun(){
         const stat=document.createElement('span');stat.className='step-status';stat.textContent=st.status==='running'?'in progress':st.status;
         li.append(icon,label,stat);box.append(li);
       }
+      box.dataset.fingerprint=next.join(',');
       el('bar').style.width=Math.max(6,Math.round(100*(p.done||0)/(p.total||4)))+'%';
       if(!p.finished){
         const run=(p.steps||[]).find(x=>x.status==='running');

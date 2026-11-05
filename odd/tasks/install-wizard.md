@@ -105,3 +105,8 @@
   4 pasos (cosign, download, verify, install) con estado
   pending/running/done; el panel Install muestra la lista con spinner
   animado, barra done/total y contador "Step X of 4 — <paso>". Suite 10/10.
+- L10 (2026-11-05, feedback del dueño): el spinner de los pasos "saltaba"
+  feo — cada poll de 400ms reconstruía la lista y reiniciaba la animación
+  CSS. Fix: actualización in-place con fingerprint de estados; el spinner
+  solo se crea cuando un paso entra en running y su DOM no se toca hasta que
+  cambia de estado.
