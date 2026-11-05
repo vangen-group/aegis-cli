@@ -69,3 +69,9 @@
   (3) `wsl --update` + `wsl --set-default-version 2`; (4) REINICIAR; (5)
   verificar con `wsl --status` (Default Version: 2) y abrir Docker Desktop.
   El hint del check wsl2 del wizard (T2) usa exactamente este procedimiento.
+- L3 (2026-11-05, reporte del dueño): "cuando hago doble click para
+  instalar. el instaler. se cerraba, la terminal". Causa: cualquier error
+  dentro de WSL (wslpath, node faltante) terminaba el .cmd sin pausa y la
+  ventana se cerraba sin dejar leer el mensaje. Fix: wslpath -a + if
+  errorlevel 1 (echo + pause) tras la llamada a WSL; la ventana ahora queda
+  abierta mostrando el error. Suite 9/9.
