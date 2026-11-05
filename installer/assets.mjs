@@ -304,7 +304,13 @@ fetch('/api/plan').then(r=>r.json()).then(p=>{
               if(v2.ok){ // UX: done state — green card, no button, 'listo'
                 li.classList.add('vstep-done');btn.hidden=true;vb.hidden=true;
                 stat.textContent='\u2713 '+(LANG==='es'?'listo':'done');stat.className='step-status state-ok';
-              } else {vb.disabled=false;stat.textContent=t.fail;stat.className='step-status state-missing';}
+              } else {vb.disabled=false;stat.textContent=t.fail;stat.className='step-status state-missing';
+                li.classList.add('vstep-fail');
+                fetch('/api/log').then(r=>r.text()).then(t3=>{
+                  const lines=t3.trim().split('\n').slice(-3).join('\n');
+                  const err=document.createElement('div');err.className='hint';
+                  err.textContent=(LANG==='es'?'última salida: ':'last output: ')+lines;
+                  wrap.append(err);});}
             };
             li.append(vb);
           } else {stat.textContent=r.error||t.fail;stat.className='step-status state-missing';btn.disabled=false;}
@@ -313,7 +319,7 @@ fetch('/api/plan').then(r=>r.json()).then(p=>{
         const r=await fetch('/api/volume/verify',{method:'POST',body:JSON.stringify({step:p.id})}).then(x=>x.json()).catch(()=>({ok:false}));
         if(r.ok){li.classList.add('vstep-done');btn.hidden=true;
           stat.textContent='\u2713 '+(LANG==='es'?'listo':'done');stat.className='step-status state-ok';}
-        else {stat.textContent=t.fail;stat.className='step-status state-missing';btn.disabled=false;}
+        else {li.classList.add('vstep-fail');stat.textContent=t.fail;stat.className='step-status state-missing';btn.disabled=false;}
       };
       wrap.append(label,btn,stat);li.append(num,wrap);box.append(li);
     }
@@ -436,6 +442,7 @@ h1{margin:0 0 10px;font-size:clamp(1.6rem,3.2vw,2.15rem);letter-spacing:-.02em}
 .vstep .step-label{font-size:.88rem;line-height:1.55;white-space:normal}
 .vstep .btn-verify{align-self:flex-start}
 .vstep-done{border-color:#34d39955;background:#34d3990d}
+.vstep-fail{border-color:#ff718f55;background:#ff718f0d}
 .vstep-done .step-label{color:var(--text-muted)}
 .vstep .step-status{font:600 11px/1.4 var(--font-mono)}
 #card-volume .lead{max-width:none}
