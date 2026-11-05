@@ -241,12 +241,12 @@ createServer(async (req, res) => {
     // UX: while a step waits on the console, TELL the user what to type.
     const CONSOLE_PROMPTS = {
       "format-luks": {
-        es: "MIRÁ LA CONSOLA: escribí YES (mayúsculas) y después tu frase de paso",
-        en: "WATCH THE CONSOLE: type YES (capital letters) and then your passphrase",
+        es: "MIRÁ LA CONSOLA: escribí YES (mayúsculas) y después tu frase de paso — A CIEGAS (no se muestra mientras escribís), Enter, y repetila",
+        en: "WATCH THE CONSOLE: type YES (capital letters), then your passphrase — BLIND (nothing shows as you type), Enter, and repeat it",
       },
       "open-mount": {
-        es: "MIRÁ LA CONSOLA: escribí tu frase de paso (dos veces, para verificarla)",
-        en: "WATCH THE CONSOLE: type your passphrase (twice, to verify it)",
+        es: "MIRÁ LA CONSOLA: escribí tu frase de paso dos veces — A CIEGAS (no se muestra mientras escribís)",
+        en: "WATCH THE CONSOLE: type your passphrase twice — BLIND (nothing shows as you type)",
       },
     };
     const steps = VSTEPS.map(([id, l]) => ({
