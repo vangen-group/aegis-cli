@@ -17,7 +17,7 @@ test('the three volume states are detected from read-only probes (S3)', () => {
 });
 
 test('verifyStep is read-only: no luksFormat, no luksOpen, no mount (S3/S6)', () => {
-    for (const id of PROVISIONING.map((p) => p.id)) {
+    for (const id of PROVISIONING().map((p) => p.id)) {
         const calls = [];
         verifyStep(id, { runner: (c, a) => { calls.push(c + ' ' + a.join(' ')); return { status: 0, stdout: '/dev/loop0\n', stderr: '' }; } });
         for (const call of calls) {
@@ -33,17 +33,18 @@ test('format-luks verification fails closed when cryptsetup isLuks says no', () 
 });
 
 test('the provisioning guide is bilingual and names the passphrase rule', () => {
-    assert.equal(PROVISIONING.length, 5);
-    for (const p of PROVISIONING) {
+    const items = PROVISIONING();
+    assert.equal(items.length, 5);
+    for (const p of items) {
         assert.ok(p.es && p.en);
         assert.ok(p.es.length > 10 && p.en.length > 10);
     }
-    assert.match(PROVISIONING[2].es, /frase de paso/);
-    assert.match(PROVISIONING[2].es, /DESTRUCTIVO/);
+    assert.match(items[2].es, /frase de paso/);
+    assert.match(items[2].es, /DESTRUCTIVO/);
 });
 
 test('S8 supersedes the dev-only gate: EVERYONE gets the provisioning list (the wizard provisions for the client)', () => {
     const src = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'installer', 'server.mjs'), 'utf8');
     assert.ok(!src.includes('AEGIS_INSTALLER_DEV === "1"'), 'the dev-only gate must be gone');
-    assert.match(src, /provisioning: PROVISIONING.map/, 'the provisioning list ships to every wizard run');
+    assert.match(src, /provisioning: PROVISIONING\(\).map/, 'the provisioning list ships to every wizard run');
 });

@@ -76,12 +76,18 @@ function verifyStep(id, { runner } = {}) {
 
 // The provisioning guide (docs/17 §4), bilingual. The human runs these in
 // their terminal; the passphrase is typed ONLY inside cryptsetup's prompt.
-const PROVISIONING = [
-    { id: 'create-image', es: 'Crear la imagen sparse (no ocupa el disco completo): truncate -s 150G ~/aegis_secure.img', en: 'Create the sparse image (does not take full disk): truncate -s 150G ~/aegis_secure.img' },
-    { id: 'associate-loop', es: 'Asociar un dispositivo loop: sudo losetup --find --show ~/aegis_secure.img (anotá /dev/loopN)', en: 'Associate a loop device: sudo losetup --find --show ~/aegis_secure.img (note /dev/loopN)' },
-    { id: 'format-luks', es: 'Formatear LUKS — ⚠️ DESTRUCTIVO: sudo cryptsetup luksFormat /dev/loopN (la frase de paso se escribe SOLO en el prompt de cryptsetup; sin ella los datos son irrecuperables por diseño)', en: 'Format LUKS — ⚠️ DESTRUCTIVE: sudo cryptsetup luksFormat /dev/loopN (type the passphrase ONLY at the cryptsetup prompt; without it data is unrecoverable by design)' },
-    { id: 'open-mount', es: 'Abrir, formatear ext4 y montar: sudo cryptsetup luksOpen /dev/loopN aegis_vol && sudo mkfs.ext4 /dev/mapper/aegis_vol && sudo mkdir -p /mnt/aegis_secure && sudo mount /dev/mapper/aegis_vol /mnt/aegis_secure', en: 'Open, format ext4 and mount: sudo cryptsetup luksOpen /dev/loopN aegis_vol && sudo mkfs.ext4 /dev/mapper/aegis_vol && sudo mkdir -p /mnt/aegis_secure && sudo mount /dev/mapper/aegis_vol /mnt/aegis_secure' },
-    { id: 'validate', es: 'Validar el primer arranque (docs/17 §4.5) y verificar cifrado en reposo (§4.6, opcional)', en: 'Validate the first boot (docs/17 §4.5) and optionally audit at-rest encryption (§4.6)' },
-];
 
+const PROVISIONING = () => {
+    const { img, mnt, mapper, isTest } = paths();
+    const loop = isTest ? '/dev/loopN (de la imagen de prueba)' : '/dev/loopN';
+    const size = isTest ? '64M (liviano, solo para probar)' : '150G';
+    const base = [
+        ['create-image', `Crear la imagen sparse (no ocupa el disco completo): truncate -s ${size} ${img}`, `Create the sparse image: truncate -s ${size} ${img}`],
+        ['associate-loop', `Asociar un dispositivo loop: sudo losetup --find --show ${img} (anotá el /dev/loopN)`, `Associate a loop device: sudo losetup --find --show ${img} (note the /dev/loopN)`],
+        ['format-luks', `Formatear LUKS — ⚠️ DESTRUCTIVO: sudo cryptsetup luksFormat ${loop} (la frase de paso se escribe SOLO en el prompt de cryptsetup; sin ella los datos son irrecuperables por diseño)`, `Format LUKS — ⚠️ DESTRUCTIVE: sudo cryptsetup luksFormat ${loop} (the passphrase is typed ONLY at the cryptsetup prompt; without it data is unrecoverable by design)`],
+        ['open-mount', `Abrir, formatear ext4 y montar: sudo cryptsetup luksOpen ${loop} ${mapper} && sudo mkfs.ext4 /dev/mapper/${mapper} && sudo mkdir -p ${mnt} && sudo mount /dev/mapper/${mapper} ${mnt}`, `Open, format ext4 and mount: sudo cryptsetup luksOpen ${loop} ${mapper} && sudo mkfs.ext4 /dev/mapper/${mapper} && sudo mkdir -p ${mnt} && sudo mount /dev/mapper/${mapper} ${mnt}`],
+        ['validate', 'Validar el primer arranque (docs/17 §4.5) y verificar cifrado en reposo (§4.6, opcional)', 'Validate the first boot (docs/17 §4.5) and optionally audit at-rest encryption (§4.6)'],
+    ];
+    return base.map(([id, es, en]) => ({ id, es, en }));
+};
 module.exports = { volumeState, verifyStep, PROVISIONING };
