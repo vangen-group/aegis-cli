@@ -131,8 +131,17 @@ function startRun(){
 }
 let pnext='';
 fetch('/api/plan').then(r=>r.json()).then(p=>{
-  el('plan').textContent=p.steps.join('\\n');
   pnext=p.next||'';
+  const planEl=el('plan');planEl.textContent='';
+  for(const [i,s] of (p.sections||[]).entries()){
+    const row=document.createElement('div');row.className='plan-step';
+    const num=document.createElement('span');num.className='plan-num';num.textContent=String(i+1);
+    const body=document.createElement('div');body.className='plan-body';
+    const head=document.createElement('div');
+    head.innerHTML='<strong>'+s.title+'</strong> <span class="plan-needs">needs: '+s.needs+'</span>';
+    const det=document.createElement('div');det.className='plan-detail';det.textContent=s.detail;
+    body.append(head,det);row.append(num,body);planEl.append(row);
+  }
   el('prereqs').innerHTML='';
   BLOCKERS=0;
   for(const q of p.prereqs||[]){
@@ -256,6 +265,17 @@ h1{margin:0 0 8px;font-size:clamp(1.5rem,3vw,2rem);letter-spacing:-.02em}
 .btn-primary:disabled{opacity:.45;cursor:not-allowed;box-shadow:none}
 .btn-ghost{background:transparent;color:var(--text-muted);border:1px solid var(--border)}
 .btn-ghost:hover{color:var(--text);border-color:var(--text-faint)}
+.plan-step{display:flex;gap:14px;padding:12px 0;border-bottom:1px solid var(--border-soft)}
+.plan-step:last-child{border-bottom:0}
+.plan-num{display:grid;place-items:center;flex:none;width:26px;height:26px;border-radius:50%;
+  border:1px solid #34d39966;background:#34d3990f;color:var(--accent);
+  font:700 12px/1 var(--font-mono)}
+.plan-body{min-width:0}
+.plan-body strong{font-size:.95rem}
+.plan-needs{display:inline-block;margin-left:8px;padding:2px 9px;border-radius:var(--radius-pill);
+  border:1px solid var(--border-soft);background:#ffffff08;color:var(--text-muted);
+  font:500 11px/1.5 var(--font-mono);letter-spacing:.04em}
+.plan-detail{color:var(--text-muted);font-size:.88rem;margin-top:3px}
 .footer{padding:0 0 28px;color:var(--text-faint);font-size:.85rem}
 .footer p{margin:0}
 :focus-visible{outline:2px solid var(--accent);outline-offset:2px}`;

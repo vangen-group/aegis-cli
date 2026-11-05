@@ -26,6 +26,31 @@ const headers = {
   "Referrer-Policy": "no-referrer",
 };
 const plan = () => ({
+  // Structured sections: each names WHAT happens and why it needs what.
+  // The CLI itself needs nothing but network — Docker/virtualization are
+  // requirements of the workstation image, pulled by the NEXT journey.
+  sections: [
+    {
+      title: "Download the signed release",
+      needs: "internet only",
+      detail: "Fetch the latest aegis-cli release tarball from GitHub (vangen-group/aegis-cli).",
+    },
+    {
+      title: "Verify every signature",
+      needs: "cosign v3.1.3 (pinned, downloaded by install.sh)",
+      detail: "Nothing is extracted or written if a signature check fails. Fails closed.",
+    },
+    {
+      title: "Install the CLI into ~/bin",
+      needs: "write access to ~/bin",
+      detail: "Copies the aegis launcher. If a previous install exists it updates in place — environments, secrets and license are untouched.",
+    },
+    {
+      title: "Then: bring up the workstation",
+      needs: "Docker + virtualization — that is what the checks above verify",
+      detail: "The CLI alone is ready after step 3. When you run 'aegis install <license-id>' it downloads and runs the signed workstation image — that is where Docker and virtualization are used.",
+    },
+  ],
   steps: [
     `bash ${installSh}   # download the latest signed aegis-cli release,`,
     "                   # verify it with cosign, then install into ~/bin",

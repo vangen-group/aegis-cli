@@ -49,7 +49,7 @@ test('build-installer-bundles creates both platform zips with launcher, bootstra
     }
 });
 
-test('the wizard server serves the plan, gates confirm behind the session, and refuses unknown routes', async () => {
+test('the plan is sectioned into named steps (T8) with the workstation handoff', async () => {
     const dir = tempDir('aegis-wizard-server-');
     try {
         const stubInstall = path.join(dir, 'install.sh');
@@ -99,6 +99,8 @@ test('the wizard server serves the plan, gates confirm behind the session, and r
             // T2: the plan carries the prerequisite checks.
             const plan0 = JSON.parse(spawnSync('curl', ['-s', '-H', `Cookie: aegis_install=${cookie}`, base + '/api/plan'], { encoding: 'utf8' }).stdout);
             assert.ok(Array.isArray(plan0.prereqs), 'the plan must include the prereq checks');
+            assert.ok(Array.isArray(plan0.sections) && plan0.sections.length >= 4, 'the plan must be sectioned into named steps');
+            assert.match(plan0.sections[3].detail, /aegis install/, 'the last section hands off to the workstation journey');
             assert.ok(typeof plan0.next === 'string' && plan0.next.includes('aegis install'), 'the plan must name the next journey (T3)');
 
             const plan = JSON.parse(spawnSync('curl', ['-s', '-H', `Cookie: aegis_install=${cookie}`, base + '/api/plan'], { encoding: 'utf8' }).stdout);
