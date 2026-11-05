@@ -168,7 +168,7 @@ createServer(async (req, res) => {
     // the dev flag only kept the old read-only flow around.
     return send(200, JSON.stringify({
       ...volumeState(),
-      provisioning: PROVISIONING.map((p) => ({ id: p.id, text: p[planLang(req.headers.cookie)] || p.en })),
+      provisioning: PROVISIONING().map((p) => ({ id: p.id, text: p[planLang(req.headers.cookie)] || p.en })),
     }), "application/json");
   }
   // T12 (S8): run a provisioning step FOR the client. stdio inherit means
@@ -199,7 +199,7 @@ createServer(async (req, res) => {
     req.on("end", () => {
       let id = "";
       try { id = JSON.parse(body || "{}").step || ""; } catch {}
-      if (!PROVISIONING.some((p) => p.id === id)) return send(400, "unknown step");
+      if (!PROVISIONING().some((p) => p.id === id)) return send(400, "unknown step");
       const r = verifyStep(id);
       return send(200, JSON.stringify({ step: id, ...r }), "application/json");
     });

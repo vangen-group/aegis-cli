@@ -227,6 +227,9 @@ fetch('/api/plan').then(r=>r.json()).then(p=>{
   }
   if(!(p.prereqs||[]).length)el('prereqs').innerHTML='<li class="prereq"><span class="dot dot-ok"></span><span><strong>All good — nothing else is needed on this platform.</strong></span></li>';
   window.__aegisLang=p.lang||'es';
+  // Dev/testing hook: ?stage=N jumps straight to a stage (screenshots).
+  const qs=Number(new URLSearchParams(location.search).get('stage'));
+  if(qs>=1&&qs<=5&&qs!==1)go(qs); // navigate, but let the rest (volume fetch) register
   applyLang(window.__aegisLang);
   // T4: LUKS volume state — detected, never toggled. When missing, show the
   // provisioning guide with a read-only verify button per step.
@@ -256,7 +259,9 @@ fetch('/api/plan').then(r=>r.json()).then(p=>{
     el('volume-guide').querySelector('[data-i18n=vol-guide-hint]').textContent=t.guide;
     const box=el('volume-steps');box.innerHTML='';
     for(const p of v.provisioning||[]){
-      const li=document.createElement('li');li.className='step';
+      const li=document.createElement('li');li.className='vstep';
+      const num=document.createElement('span');num.className='plan-num';num.textContent=String([...box.children].length+1);
+      const wrap=document.createElement('div');wrap.className='vstep-body';
       const label=document.createElement('span');label.className='step-label';label.textContent=p.text;
       const isDev=(v.dev===true);
       const btn=document.createElement('button');btn.className='btn btn-ghost btn-verify';
@@ -284,7 +289,7 @@ fetch('/api/plan').then(r=>r.json()).then(p=>{
         stat.textContent=r.ok?t.ok:t.fail;
         stat.className='step-status '+(r.ok?'state-ok':'state-missing');
       };
-      li.append(label,btn,stat);box.append(li);
+      wrap.append(label,btn,stat);li.append(num,wrap);box.append(li);
     }
   }).catch(()=>{});
   el('to-plan').disabled=BLOCKERS>0;
@@ -380,6 +385,14 @@ h1{margin:0 0 8px;font-size:clamp(1.5rem,3vw,2rem);letter-spacing:-.02em}
 .panel-actions{display:flex;align-items:center;gap:14px}
 .card-optin{padding:14px 16px;margin:0 0 18px;border:1px solid var(--border);border-radius:var(--radius);
   background:var(--surface-1)}
+.vsteps{list-style:none;margin:14px 0 0;padding:0;display:flex;flex-direction:column;gap:10px}
+.vstep{display:grid;grid-template-columns:30px 1fr;gap:12px;align-items:start;
+  padding:14px 16px;border:1px solid var(--border);border-radius:var(--radius);background:var(--surface-1)}
+.vstep-body{min-width:0;display:flex;flex-direction:column;gap:10px}
+.vstep .step-label{font-size:.88rem;line-height:1.55;white-space:normal}
+.vstep .btn-verify{align-self:flex-start}
+.vstep .step-status{font:600 11px/1.4 var(--font-mono)}
+#card-volume .lead{max-width:none}
 #volume-card{margin-top:16px;margin-bottom:0}
 #volume-title{font-size:.8rem;margin-bottom:10px}
 .btn-verify{padding:6px 14px;font-size:.8rem}
