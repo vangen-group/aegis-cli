@@ -116,6 +116,7 @@ export const HTML = `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <footer class="footer">
   <p>This page talks only to the installer running on this computer at 127.0.0.1. Closing the tab does not stop it; use <strong>Finish</strong> or press Ctrl+C in the terminal.</p>
 </footer>
+<script>window.onerror=function(m,u,l){document.title='JSERR:'+m+' @'+l;};window.onunhandledrejection=function(e){document.title='JSREJ:'+e.reason;};</script>
 <script src="/wizard.js"></script></body></html>`;
 export const JS = `const el=(id)=>document.getElementById(id);
 const WORD={ok:{es:'disponible',en:'available'},missing:{es:'falta',en:'missing'},unknown:{es:'desconocido',en:'unknown'},info:{es:'',en:''}};
@@ -145,8 +146,17 @@ function startRun(){
       if(t2){el('log').textContent=t2;el('log').scrollTop=el('log').scrollHeight;}
       const m=/INSTALL-FINISHED rc=(\\d+)/.exec(t2);
       if(m){clearInterval(t);el('bar').classList.remove('bar-run');
-        if(m[1]==='0'){el('bar').style.width='100%';go(4);
-          el('next-done').textContent=(typeof pnext!=='undefined'&&pnext)||'aegis install <license-id>';}
+        if(m[1]==='0'){el('bar').style.width='100%';go(5);
+          el('next-done').textContent=(typeof pnext!=='undefined'&&pnext)||'aegis install <license-id>';
+          const sum=el('done-summary');sum.innerHTML='';
+          const t=I18N[window.__aegisLang||'es'];
+          for(const item of [
+            (LANG==='es'?'CLI instalado y firma verificada':'CLI installed, signature verified'),
+            (LANG==='es'?'Volumen LUKS listo':'LUKS volume ready'),
+            (LANG==='es'?'Telemetry: '+(document.getElementById('telemetry')?.checked?'activada':'apagada'):'Telemetry: '+(document.getElementById('telemetry')?.checked?'on':'off')),
+          ]){
+            const chip=document.createElement('span');chip.className='done-chip';chip.textContent='\u2713 '+item;sum.append(chip);
+          }}
         else{el('bar').classList.add('bar-error');el('bar').style.width='100%';
           el('progress-count').textContent='The installer failed — read the console.';
           el('retry').hidden=false;}}
@@ -237,7 +247,7 @@ fetch('/api/plan').then(r=>r.json()).then(p=>{
   window.__aegisLang=p.lang||'es';
   // Dev/testing hook: ?stage=N jumps straight to a stage (screenshots).
   const qs=Number(new URLSearchParams(location.search).get('stage'));
-  if(qs>=1&&qs<=5&&qs!==1)go(qs); // navigate, but let the rest (volume fetch) register
+  if(qs>=1&&qs<=5&&qs!==1){go(qs);document.title='HOOK-RAN-'+qs;} // dev hook
   applyLang(window.__aegisLang);
   // T4: LUKS volume state — detected, never toggled. When missing, show the
   // provisioning guide with a read-only verify button per step.
@@ -307,7 +317,7 @@ fetch('/api/plan').then(r=>r.json()).then(p=>{
               } else {vb.disabled=false;stat.textContent=t.fail;stat.className='step-status state-missing';
                 li.classList.add('vstep-fail');
                 fetch('/api/log').then(r=>r.text()).then(t3=>{
-                  const lines=t3.trim().split('\n').slice(-3).join('\n');
+                  const lines=t3.trim().split('\\n').slice(-3).join(' | ');
                   const err=document.createElement('div');err.className='hint';
                   err.textContent=(LANG==='es'?'última salida: ':'last output: ')+lines;
                   wrap.append(err);});}
