@@ -273,7 +273,8 @@ fetch('/api/plan').then(r=>r.json()).then(p=>{
     st.textContent=(t[v.state]||v.state)+(v.img?' ('+v.img+')':'');
     // T13: test volume exists (sealed/half-provisioned)? offer cleanup.
     if(v.isTest&&v.state!=='missing'){
-      const cb=document.createElement('button');cb.className='btn btn-ghost btn-verify';
+      if(document.getElementById('vcleanup'))return;
+      const cb=document.createElement('button');cb.className='btn btn-ghost btn-verify';cb.id='vcleanup';
       cb.style.marginLeft='10px';
       cb.textContent=LANG==='es'?'Eliminar volumen de prueba':'Delete test volume';
       cb.onclick=async()=>{cb.disabled=true;
