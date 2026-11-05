@@ -7,7 +7,7 @@ import { randomBytes } from "node:crypto";
 import { HTML, JS, CSS } from "./assets.mjs";
 import { collectPrereqs } from "./prereqs.cjs";
 import { volumeState, verifyStep, PROVISIONING } from "./volume.cjs";
-import { runStep } from "./provision.cjs";
+import { runStep, cleanupTestVolume, isTest } from "./provision.cjs";
 import { writeFileSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -174,6 +174,13 @@ createServer(async (req, res) => {
       return send(202, JSON.stringify({ step, started: true }), "application/json");
     });
     return;
+  }
+  // T13: remove the TEST volume (umount + luksClose + losetup -d + rm) —
+  // guarded inside cleanupTestVolume to refuse any non-test path.
+  if (url.pathname === "/api/volume/cleanup" && req.method === "POST") {
+    const r = cleanupTestVolume({ spawnFn: (argv, opts) => spawn(argv[0], argv.slice(1), opts) });
+    if (!r.ok) return send(400, r.error || "refused");
+    return send(202, JSON.stringify({ cleanup: true }), "application/json");
   }
   if (url.pathname === "/api/volume/verify" && req.method === "POST") {
     let body = "";
