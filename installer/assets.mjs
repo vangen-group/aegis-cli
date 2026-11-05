@@ -306,7 +306,7 @@ fetch('/api/plan').then(r=>r.json()).then(p=>{
   el('confirm').disabled=false;
   el('reqs-note').textContent=BLOCKERS>0
     ? ((window.__aegisLang||'es')==='es'
-        ? BLOCKERS+' requisito'+(BLOCKERS>1?'s':'')+' falta'+(BLOCKERS>1?'n':'')+' — resolvélo y recargá esta página.'
+        ? (BLOCKERS===1?'Falta 1 requisito':BLOCKERS+' requisitos faltan')+' — resolvé'+(BLOCKERS>1?'los':'lo')+' y recargá esta página.'
         : BLOCKERS+' requirement'+(BLOCKERS>1?'s':'')+' missing — fix it and reload this page.')
     : ((window.__aegisLang||'es')==='es' ? 'Todo en orden. Podés continuar.' : 'Everything is in place. Continue when ready.');
 });
