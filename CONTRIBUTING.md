@@ -26,6 +26,7 @@ Thank you for your interest in contributing to Aegis CLI! This document outlines
    ```bash
    bash -n bin/aegis              # Syntax check
    bash tests/update-uiux.test.sh # Run tests
+   node --test tests/*.test.js    # Installer wizard tests (needs util-linux `script`)
    ```
 
 3. **Verify bash compatibility**
@@ -93,6 +94,7 @@ Test the full `aegis update` flow:
 
 ```bash
 bash tests/update-uiux.test.sh
+node --test tests/*.test.js
 ```
 
 Expected output:
@@ -151,7 +153,7 @@ refactor: extract timer logic to helper
 ## Pull Request Process
 
 1. **Update CHANGELOG.md** with your changes (Unreleased section)
-2. **Run tests**: `bash tests/update-uiux.test.sh`
+2. **Run tests**: `bash tests/update-uiux.test.sh` and `node --test tests/*.test.js`
 3. **Check syntax**: `bash -n bin/aegis`
 4. **Write clear PR description**:
    - What problem does it solve?
