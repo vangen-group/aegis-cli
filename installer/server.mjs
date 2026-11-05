@@ -37,47 +37,56 @@ function detectPlatform() {
   } catch {}
   return "linux";
 }
+const T = (es, en) => ({ es, en });
 const COMMON = [
   {
-    title: "Download the signed release",
-    needs: "internet only",
-    detail: "Fetch the latest aegis-cli release tarball from GitHub (vangen-group/aegis-cli).",
+    title: T("Descargar el release firmado", "Download the signed release"),
+    needs: T("solo internet", "internet only"),
+    detail: T("Trae el último tarball de aegis-cli desde GitHub (vangen-group/aegis-cli).",
+              "Fetch the latest aegis-cli release tarball from GitHub (vangen-group/aegis-cli)."),
   },
   {
-    title: "Verify every signature",
-    needs: "cosign v3.1.3 (pinned, downloaded by install.sh)",
-    detail: "Nothing is extracted or written if a signature check fails. Fails closed.",
+    title: T("Verificar todas las firmas", "Verify every signature"),
+    needs: T("cosign v3.1.3 (pinned, lo baja install.sh)", "cosign v3.1.3 (pinned, downloaded by install.sh)"),
+    detail: T("Si una verificación de firma falla, no se extrae ni se escribe nada. Falla cerrado.",
+              "Nothing is extracted or written if a signature check fails. Fails closed."),
   },
 ];
 const INSTALL_STEP = (where) => ({
-  title: "Install the CLI into ~/bin",
-  needs: "write access to ~/bin",
-  detail: `Copies the aegis launcher into ~/bin ${where}. If a previous install exists it updates in place — environments, secrets and license are untouched.`,
+  title: T("Instalar el CLI en ~/bin", "Install the CLI into ~/bin"),
+  needs: T("permiso de escritura en ~/bin", "write access to ~/bin"),
+  detail: T(`Copia el launcher de aegis a ~/bin ${where.es}. Si ya había una instalación la actualiza en el lugar — entornos, secretos y licencia quedan intactos.`,
+            `Copies the aegis launcher into ~/bin ${where.en}. If a previous install exists it updates in place — environments, secrets and license are untouched.`),
 });
 const WORKSTATION_STEP = (where) => ({
-  title: "Then: bring up the workstation",
-  needs: "Docker + virtualization — that is what the checks above verify",
-  detail: `The CLI alone is ready after step 3. When you run 'aegis install <license-id>' it downloads and runs the signed workstation image — that is where Docker and virtualization are used. ${where}`,
+  title: T("Después: levantar la workstation", "Then: bring up the workstation"),
+  needs: T("Docker + virtualización — eso es lo que verifican los checks de arriba", "Docker + virtualization — that is what the checks above verify"),
+  detail: T(`El CLI solo ya está listo tras el paso 3. Cuando corras 'aegis install <license-id>' descarga y ejecuta la imagen firmada de la workstation — ahí es donde se usan Docker y la virtualización. ${where.es}`,
+            `The CLI alone is ready after step 3. When you run 'aegis install <license-id>' it downloads and runs the signed workstation image — that is where Docker and virtualization are used. ${where.en}`),
 });
 const PLANS = {
   "windows-wsl": {
     sections: [...COMMON,
-      INSTALL_STEP("inside this WSL2 Ubuntu environment — nothing is written to the Windows host, the host only had the zip"),
-      WORKSTATION_STEP("Everything lives inside the WSL2 Ubuntu distro; removing it removes all of Aegis."),
+      INSTALL_STEP({ es: "dentro de este entorno Ubuntu de WSL2 — nada se escribe en el host Windows; el host solo tuvo el zip",
+                     en: "inside this WSL2 Ubuntu environment — nothing is written to the Windows host, the host only had the zip" }),
+      WORKSTATION_STEP({ es: "Todo vive dentro del distro Ubuntu de WSL2; eliminar el distro elimina todo Aegis.",
+                         en: "Everything lives inside the WSL2 Ubuntu distro; removing it removes all of Aegis." }),
     ],
     prereqsPlatform: "windows-wsl",
   },
   darwin: {
     sections: [...COMMON,
-      INSTALL_STEP("(~/bin on macOS)"),
-      WORKSTATION_STEP("The workstation runs as containers in Docker Desktop on your Mac."),
+      INSTALL_STEP({ es: "(~/bin en macOS)", en: "(~/bin on macOS)" }),
+      WORKSTATION_STEP({ es: "La workstation corre como contenedores en Docker Desktop en tu Mac.",
+                         en: "The workstation runs as containers in Docker Desktop on your Mac." }),
     ],
     prereqsPlatform: "darwin",
   },
   linux: {
     sections: [...COMMON,
-      INSTALL_STEP("on your Linux machine"),
-      WORKSTATION_STEP("The workstation runs as containers in your Docker Engine."),
+      INSTALL_STEP({ es: "en tu máquina Linux", en: "on your Linux machine" }),
+      WORKSTATION_STEP({ es: "La workstation corre como contenedores en tu Docker Engine.",
+                         en: "The workstation runs as containers in your Docker Engine." }),
     ],
     prereqsPlatform: "linux",
   },
@@ -89,10 +98,14 @@ const PLATFORM = detectPlatform();
 const planLang = (cookieHeader) => /(?:^|;)\s*aegis_lang=en(?:;|$)/.test(cookieHeader || "") ? "en" : "es";
 const plan = (lang) => {
   const p = PLANS[PLATFORM] || PLANS.linux;
+  const pick = (t) => (typeof t === "object" ? t[lang] || t.en : t);
+  const sections = p.sections.map((sec) => ({
+    title: pick(sec.title), needs: pick(sec.needs), detail: pick(sec.detail),
+  }));
   return {
     platform: PLATFORM,
     lang,
-    sections: p.sections,
+    sections,
     steps: [
       `bash ${installSh}   # download the latest signed aegis-cli release,`,
       "                   # verify it with cosign, then install into ~/bin",
@@ -136,14 +149,15 @@ createServer(async (req, res) => {
   if (url.pathname === "/api/progress") {
     // T10: install.sh logs an explicit [step] started/finished protocol; the
     // first started-but-not-finished step is running (gentle-shell's rule).
+    const lang = planLang(req.headers.cookie);
     const STEPS = [
-      ["resolve-platform", "Resolve platform"],
-      ["acquire-cosign", "Get cosign v3.1.3 (checksum-verified)"],
-      ["resolve-release", "Resolve the release"],
-      ["download", "Download the signed aegis-cli release"],
-      ["verify", "Verify every signature"],
-      ["extract-install", "Install the CLI into ~/bin"],
-    ];
+      ["resolve-platform", ["Resolver la plataforma", "Resolve platform"]],
+      ["acquire-cosign", ["Obtener cosign v3.1.3 (verificado por checksum)", "Get cosign v3.1.3 (checksum-verified)"]],
+      ["resolve-release", ["Resolver el release", "Resolve the release"]],
+      ["download", ["Descargar el release firmado de aegis-cli", "Download the signed aegis-cli release"]],
+      ["verify", ["Verificar todas las firmas", "Verify every signature"]],
+      ["extract-install", ["Instalar el CLI en ~/bin", "Install the CLI into ~/bin"]],
+    ].map(([id, l]) => [id, l[lang] || l[1]]);
     // S7: a resumed run logs 'skipped <id>' for steps the journal already
     // finished — those count as done too.
     const finishedIds = [...log.matchAll(/\[step\] (?:finished|skipped) ([a-z-]+)/g)].map((m) => m[1]);

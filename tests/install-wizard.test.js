@@ -164,7 +164,7 @@ test('the plan is platform-specific: windows-wsl names the Ubuntu containment (T
             ? spawnSync('curl', ['-s', '-b', dir + '/c.jar', `http://127.0.0.1:${port}/api/plan`], { encoding: 'utf8' }).stdout
             : '{}');
         assert.equal(plan.platform, 'windows-wsl');
-        assert.ok(plan.sections.some((s) => /WSL2 Ubuntu/.test(s.detail)), 'the plan must state the Ubuntu containment');
+        assert.ok(plan.sections.some((s) => /WSL2 Ubuntu|Ubuntu de WSL2/.test(s.detail)), 'the plan must state the Ubuntu containment');
         assert.ok(plan.sections.every((s) => !/on your Linux machine/.test(s.detail)), 'the native-Linux wording must not leak into the WSL plan');
     } finally {
         child.kill('SIGTERM');
