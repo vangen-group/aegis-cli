@@ -104,7 +104,7 @@ function collectPrereqs({ platform = process.platform, runner, lang = 'es', demo
                 state: 'ok',
                 hint: hintOf('virtualization'),
             },
-            check('docker', 'Docker Desktop running (WSL2 backend)', dockerProbe, HINTS.docker),
+            check('docker', { es: 'Docker Desktop corriendo (backend WSL2)', en: 'Docker Desktop running (WSL2 backend)' }, dockerProbe, HINTS.docker),
             check('aegis', '', (r) => aegisCheck(r, lang), hintOf('aegis')),
         ];
     }

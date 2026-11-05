@@ -180,7 +180,15 @@ createServer(async (req, res) => {
     req.on("end", () => {
       let step = "", consent = false;
       try { const b = JSON.parse(body || "{}"); step = b.step || ""; consent = b.consent === true; } catch {}
-      const r = runStep(step, { consent, spawnFn: (argv, opts) => spawn(argv[0], argv.slice(1), opts) });
+      // stdin inherited (cryptsetup/sudo prompts are answered on the TTY),
+      // stdout/stderr piped so the browser console dock shows the progress.
+      const r = runStep(step, { consent, spawnFn: (argv, opts) => {
+        const child = spawn(argv[0], argv.slice(1), { stdio: ["inherit", "pipe", "pipe"] });
+        child.stdout?.on("data", (d) => (log += d));
+        child.stderr?.on("data", (d) => (log += d));
+        child.on("close", (code) => (log += `[step] ${step} exit ${code}\n`));
+        return child;
+      } });
       if (!r.ok) return send(400, r.error || "refused");
       return send(202, JSON.stringify({ step, started: true }), "application/json");
     });
