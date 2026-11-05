@@ -1,0 +1,15 @@
+#!/bin/sh
+# Double-click bootstrap (install-wizard T1). Runs from an extracted bundle,
+# never from a remote pipe. Validates the bundle layout, then starts the
+# loopback wizard server with the best node available.
+set -eu
+bundle=$(CDPATH= cd -P "$(dirname "$0")/.." && pwd)
+for f in installer/server.mjs installer/assets.mjs install.sh; do
+    [ -f "$bundle/$f" ] || { echo "bootstrap: bundle file missing: $f" >&2; exit 1; }
+    [ -L "$bundle/$f" ] && { echo "bootstrap: unsafe symlink in bundle: $f" >&2; exit 1; }
+done
+NODE_BIN="${AEGIS_INSTALLER_NODE:-}"
+[ -z "$NODE_BIN" ] && NODE_BIN="$(command -v node || true)"
+[ -n "$NODE_BIN" ] || { echo "bootstrap: no node found — install Node.js, or set AEGIS_INSTALLER_NODE" >&2; exit 1; }
+echo "opening the Aegis CLI installer in your browser..."
+exec "$NODE_BIN" "$bundle/installer/server.mjs" "$@"
