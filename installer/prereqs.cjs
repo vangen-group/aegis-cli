@@ -9,7 +9,7 @@ const fs = require('node:fs');
 const HINTS = {
     virtualization:
         'enable virtualization in your BIOS/UEFI firmware (Intel VT-x / AMD-V), then run this installer again',
-    wsl2: 'install WSL2 from an elevated PowerShell: wsl --install — then restart Windows and run this installer again',
+    wsl2: 'in an Administrator PowerShell run: dism.exe /online /enable-feature /featurename:Microsoft-Windows-Subsystem-Linux /all /norestart && dism.exe /online /enable-feature /featurename:VirtualMachinePlatform /all /norestart && wsl --update && wsl --set-default-version 2 — then RESTART Windows and verify with wsl --status (Default Version: 2). Docker Desktop needs this backend',
 };
 
 // Returns [{id,label,state:'ok'|'missing'|'unknown',hint}]. Never throws.

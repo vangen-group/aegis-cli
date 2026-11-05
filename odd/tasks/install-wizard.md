@@ -54,3 +54,13 @@
   server incluye prereqs + "siguiente: aegis install <license-id>"; el wizard
   muestra prereqs con hints y checkbox de telemetry opt-in (off por defecto);
   /api/confirm persiste telemetry-choice.json. Tests 7/7.
+- L2 (2026-11-04, verbatim del dueño): "esto es una memoria que tuvimos que
+  hacer para poder instalaer aegis cli, osea recuerda que teniamos que tener
+  docker destok". Procedimiento real que hicieron en Windows para habilitar
+  WSL2 (requisito de Docker Desktop, y Docker Desktop es requisito de la
+  workstation): (1) PowerShell como Administrador; (2) `dism.exe /online
+  /enable-feature /featurename:Microsoft-Windows-Subsystem-Linux /all
+  /norestart` + `dism.exe /online /enable-feature /featurename:VirtualMachinePlatform /all /norestart`;
+  (3) `wsl --update` + `wsl --set-default-version 2`; (4) REINICIAR; (5)
+  verificar con `wsl --status` (Default Version: 2) y abrir Docker Desktop.
+  El hint del check wsl2 del wizard (T2) usa exactamente este procedimiento.
