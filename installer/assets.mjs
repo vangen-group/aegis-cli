@@ -54,6 +54,7 @@ export const HTML = `<!doctype html><html lang="en"><head><meta charset="utf-8">
         <div class="progress">
           <div class="progress-head"><span class="progress-title" data-i18n="progress">Progreso</span><span class="progress-count" id="volume-progress-count"></span></div>
           <div role="progressbar" aria-label="Volume progress"><div class="bar" id="volume-bar"></div></div>
+          <p id="volume-prompt" class="console-hint" hidden></p>
           <ul id="volume-steps" class="steps"></ul>
         </div>
       </div>
@@ -290,6 +291,9 @@ fetch('/api/plan').then(r=>r.json()).then(p=>{
           }
           el('volume-bar').style.width=Math.max(6,Math.round(100*(p.done||0)/(p.total||4)))+'%';
           el('volume-progress-count').textContent='Paso '+Math.min((p.done||0)+1,p.total||4)+' de '+(p.total||4);
+          const ph=el('volume-prompt');
+          if(p.consolePrompt){ph.textContent='⚠ '+(p.consolePrompt);ph.hidden=false;}
+          else ph.hidden=true;
           if(!p.running){
             clearInterval(poll);
             if((p.done||0)===(p.total||4)&&p.total>0){
@@ -444,6 +448,8 @@ h1{margin:0 0 10px;font-size:clamp(1.6rem,3.2vw,2.15rem);letter-spacing:-.02em}
 .vstep-done .step-label{color:var(--text-muted)}
 .vstep .step-status{font:600 11px/1.4 var(--font-mono)}
 #card-volume .lead{max-width:none}
+.console-hint{margin:10px 0 0;padding:10px 14px;border:1px solid #e0c27a55;background:#e0c27a14;
+  border-radius:var(--radius);color:var(--warning);font:600 .9rem/1.5 var(--font-sans)}
 #volume-card{margin-top:16px;margin-bottom:0}
 #volume-title{font-size:.8rem;margin-bottom:10px}
 .btn-verify{padding:6px 14px;font-size:.8rem}

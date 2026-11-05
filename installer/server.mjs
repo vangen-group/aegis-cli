@@ -217,12 +217,25 @@ createServer(async (req, res) => {
     const lang = planLang(req.headers.cookie);
     const finishedIds = [...log.matchAll(/\[step\] (?:finished|skipped) ([a-z-]+)/g)].map((m) => m[1]);
     const startedIds = [...log.matchAll(/\[step\] started ([a-z-]+)/g)].map((m) => m[1]);
+    // UX: while a step waits on the console, TELL the user what to type.
+    const CONSOLE_PROMPTS = {
+      "format-luks": {
+        es: "MIRÁ LA CONSOLA: escribí YES (mayúsculas) y después tu frase de paso",
+        en: "WATCH THE CONSOLE: type YES (capital letters) and then your passphrase",
+      },
+      "open-mount": {
+        es: "MIRÁ LA CONSOLA: escribí tu frase de paso (dos veces, para verificarla)",
+        en: "WATCH THE CONSOLE: type your passphrase (twice, to verify it)",
+      },
+    };
     const steps = VSTEPS.map(([id, l]) => ({
       id, label: l[lang] || l.en,
       status: finishedIds.includes(id) ? "done" : startedIds.includes(id) ? "running" : "pending",
     }));
+    const running = steps.find((x) => x.status === "running");
+    const consolePrompt = running ? CONSOLE_PROMPTS[running.id]?.[lang] : null;
     const done = steps.filter((x) => x.status === "done").length;
-    return send(200, JSON.stringify({ steps, done, total: steps.length, running: log.includes("provision-all running") && !log.includes("provision-all done") }), "application/json");
+    return send(200, JSON.stringify({ steps, done, total: steps.length, running: log.includes("provision-all running") && !log.includes("provision-all done"), consolePrompt }), "application/json");
   }
   // T12 (S8): run a provisioning step FOR the client. stdio inherit means
   // cryptsetup/sudo prompt the user DIRECTLY in the installer console — the
