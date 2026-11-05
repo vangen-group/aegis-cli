@@ -40,7 +40,7 @@ export const HTML = `<!doctype html><html lang="en"><head><meta charset="utf-8">
       <ul id="prereqs" class="prereqs"><li class="prereq"><span class="dot dot-unknown"></span><span data-i18n="checking">Verificando tu máquina…</span></li></ul>
       <p class="stage-note" id="reqs-note" data-i18n="waiting">Esperando los checks…</p>
       <div class="panel-actions">
-        <button id="to-plan" class="btn btn-primary" disabled data-i18n="review">Ver el plan</button>
+        <button id="to-plan" class="btn btn-primary" disabled data-i18n="review">Revisar el plan</button>
       </div>
     </section>
 
@@ -54,7 +54,7 @@ export const HTML = `<!doctype html><html lang="en"><head><meta charset="utf-8">
         <ol id="volume-steps" class="steps"></ol>
       </div>
       <div class="panel-actions">
-        <button id="to-install" class="btn btn-primary">Instalar Aegis CLI</button>
+        <button id="to-install" class="btn btn-primary" data-i18n="to-install">Continuar a la instalación</button>
       </div>
     </section>
 
@@ -74,7 +74,7 @@ export const HTML = `<!doctype html><html lang="en"><head><meta charset="utf-8">
       </section>
       <div class="panel-actions">
         <button id="back" class="btn btn-ghost" data-i18n="back">Volver</button>
-        <button id="confirm" class="btn btn-primary" disabled data-i18n="install">Instalar Aegis CLI</button>
+        <button id="confirm" class="btn btn-primary" disabled data-i18n="to-volume">Continuar</button>
       </div>
     </section>
 
@@ -181,11 +181,11 @@ function startRun(){
   },400);
 }
 const I18N = {
-  es: {'local':'Instalador local','reqs-title':'Verificando esta computadora','checking':'Verificando tu máquina…','waiting':'Esperando los checks…','review':'Ver el plan','plan-title':'Confirmá el plan','back':'Volver','install':'Instalar Aegis CLI','run-title':'Instalando Aegis CLI','progress':'Progreso','finish':'Terminar','retry':'Volver al plan','done-title':'Aegis CLI está instalado',
+  es: {'local':'Instalador local','reqs-title':'Verificando esta computadora','checking':'Verificando tu máquina…','waiting':'Esperando los checks…','review':'Revisar el plan','to-volume':'Continuar','to-install':'Continuar a la instalación','plan-title':'Confirmá el plan','back':'Volver','install':'Instalar Aegis CLI','run-title':'Instalando Aegis CLI','progress':'Progreso','finish':'Listo','retry':'Volver al plan','done-title':'Aegis CLI está instalado',
     'st1':'Check','st2':'Revisar','st3':'Volumen','st4':'Install','st5':'Listo','eyebrow1':'Paso 1 de 5 · Check','eyebrow2':'Paso 2 de 5 · Revisar','eyebrow3':'Paso 3 de 5 · Volumen','eyebrow4':'Paso 4 de 5 · Instalar','eyebrow5':'Paso 5 de 5 · Listo','volume-h1':'Tu volumen seguro LUKS','volume-lead':'Tus secretos y entornos viven cifrados en un volumen LUKS. Si todavía no existe, el wizard lo crea con vos — la frase de paso se escribe SOLO en la consola y nunca atraviesa el wizard.',
     'running':'en progreso','done':'hecho','pending':'pendiente','failed':'falló',
     'step-of':(a,b)=>'Paso '+a+' de '+b},
-  en: {'local':'Local installer','reqs-title':'Checking this computer','checking':'Checking your machine…','waiting':'Waiting for checks…','review':'Review the plan','plan-title':'Confirm the plan','back':'Back','install':'Install Aegis CLI','run-title':'Installing Aegis CLI','progress':'Progress','finish':'Finish','retry':'Back to the plan','done-title':'Aegis CLI is installed',
+  en: {'local':'Local installer','reqs-title':'Checking this computer','checking':'Checking your machine…','waiting':'Waiting for checks…','review':'Review the plan','to-volume':'Continue','to-install':'Continue to install','plan-title':'Confirm the plan','back':'Back','install':'Install Aegis CLI','run-title':'Installing Aegis CLI','progress':'Progress','finish':'Finish','retry':'Back to the plan','done-title':'Aegis CLI is installed',
     'eyebrow1':'Step 1 of 4 · Check','eyebrow2':'Step 2 of 4 · Review','eyebrow3':'Step 3 of 4 · Install','eyebrow4':'Step 4 of 4 · Done',
     'running':'in progress','done':'done','pending':'pending','failed':'failed',
     'step-of':(a,b)=>'Step '+a+' of '+b},
@@ -214,16 +214,24 @@ fetch('/api/plan').then(r=>r.json()).then(p=>{
   }
   el('prereqs').innerHTML='';
   BLOCKERS=0;
+  const wl=window.__aegisLang||'es';
   for(const q of p.prereqs||[]){
     if(q.state==='missing')BLOCKERS++;
-    const li=document.createElement('li');li.className='prereq';
-    const dot=document.createElement('span');dot.className='dot dot-'+q.state;
-    const text=document.createElement('span');
-    const wl=window.__aegisLang||'es';
-    text.innerHTML='<strong>'+q.label+'</strong>'+
-      (q.state==='info'?'':' — <span class="state state-'+q.state+'">'+wordFor(q,wl)+'</span>')+
-      (q.state==='ok'||q.state==='info'?'':'<small class="hint">'+q.hint+'</small>');
-    li.append(dot,text);el('prereqs').append(li);
+        const li=document.createElement('li');li.className='req'+(q.state==='ok'?' req-ok':q.state==='missing'?' req-bad':'');
+    const icon=document.createElement('span');icon.className='req-icon req-icon-'+q.state;
+    icon.textContent=q.state==='ok'?'\u2713':q.state==='missing'?'!':'?';
+    const body=document.createElement('div');body.className='req-body';
+    const top=document.createElement('div');top.className='req-top';
+    const label=document.createElement('span');label.className='req-label';label.textContent=q.label;
+    top.append(label);
+    if(q.state!=='ok'&&q.state!=='info'){
+      const pill=document.createElement('span');pill.className='req-pill req-pill-'+q.state;
+      pill.textContent=wl==='es'?(q.state==='missing'?'falta':'revisar'):(q.state==='missing'?'missing':'check');
+      top.append(pill);
+    }
+    body.append(top);
+    if(q.state==='missing'){const h=document.createElement('div');h.className='hint';h.textContent=q.hint;body.append(h);}
+    li.append(icon,body);el('prereqs').append(li);
   }
   if(!(p.prereqs||[]).length)el('prereqs').innerHTML='<li class="prereq"><span class="dot dot-ok"></span><span><strong>All good — nothing else is needed on this platform.</strong></span></li>';
   window.__aegisLang=p.lang||'es';
@@ -297,8 +305,10 @@ fetch('/api/plan').then(r=>r.json()).then(p=>{
   // staged-UI rewrite: confirm started disabled and nothing re-enabled it.)
   el('confirm').disabled=false;
   el('reqs-note').textContent=BLOCKERS>0
-    ? BLOCKERS+' requirement'+(BLOCKERS>1?'s':'')+' missing — fix '+(BLOCKERS>1?'them':'it')+' and reload this page.'
-    : 'Everything is in place. Continue when ready.';
+    ? ((window.__aegisLang||'es')==='es'
+        ? BLOCKERS+' requisito'+(BLOCKERS>1?'s':'')+' falta'+(BLOCKERS>1?'n':'')+' — resolvélo y recargá esta página.'
+        : BLOCKERS+' requirement'+(BLOCKERS>1?'s':'')+' missing — fix it and reload this page.')
+    : ((window.__aegisLang||'es')==='es' ? 'Todo en orden. Podés continuar.' : 'Everything is in place. Continue when ready.');
 });
 el('to-plan').onclick=()=>go(2);
 el('to-install').onclick=()=>{el('to-install').disabled=true;startRun();};
@@ -342,7 +352,7 @@ body{margin:0;min-height:100vh;display:flex;flex-direction:column;background:var
   font:500 12px/1.4 var(--font-mono);letter-spacing:.08em;text-transform:uppercase}
 .dot{width:8px;height:8px;border-radius:50%;background:var(--success);box-shadow:0 0 0 3px #6ee7b726}
 main{flex:1;padding:24px 0 56px}
-.stages{display:flex;gap:8px;margin:0 0 24px;padding:0;list-style:none}
+.stages{display:flex;gap:8px;margin:0 0 32px;padding:0;list-style:none}
 .stage{display:flex;flex:1;align-items:center;gap:10px;min-width:0;color:var(--text-muted);
   font:600 12px/1.2 var(--font-mono);letter-spacing:.1em;text-transform:uppercase}
 .stage:not(:last-child)::after{content:"";flex:1;height:1px;min-width:12px;background:var(--border)}
@@ -360,7 +370,7 @@ main{flex:1;padding:24px 0 56px}
   pointer-events:none;background:
   radial-gradient(38% 50% at 30% 30%,#34d39938,#0000 70%),
   radial-gradient(30% 40% at 75% 40%,#a9c7ee1f,#0000 70%);filter:blur(32px)}
-.panel{position:relative;overflow:hidden;padding:clamp(24px,4.2vw,52px);border:1px solid var(--border);
+.panel{position:relative;overflow:hidden;padding:clamp(28px,4.5vw,56px);border:1px solid var(--border);
   border-radius:var(--radius-lg);background:linear-gradient(180deg,#15201bf2,#111815f2);
   box-shadow:var(--shadow);animation:rise .35s var(--ease) both}
 .panel::before{content:"";position:absolute;inset:0 0 auto;height:2px;
@@ -368,13 +378,29 @@ main{flex:1;padding:24px 0 56px}
 @keyframes rise{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
 .eyebrow{margin:0 0 10px;font:600 12px/1.4 var(--font-mono);letter-spacing:.14em;
   text-transform:uppercase;color:var(--accent)}
-h1{margin:0 0 8px;font-size:clamp(1.5rem,3vw,2rem);letter-spacing:-.02em}
-.lead{margin:0 0 22px;color:var(--text-muted);max-width:56ch}
+h1{margin:0 0 10px;font-size:clamp(1.6rem,3.2vw,2.15rem);letter-spacing:-.02em}
+.lead{margin:0 0 28px;color:var(--text-muted);max-width:58ch;font-size:1.02rem}
 .terminal{margin:0 0 18px;padding:14px 16px;background:var(--bg-deep);border:1px solid var(--border-soft);
   border-radius:var(--radius);font:12.5px/1.7 var(--font-mono);color:var(--accent-soft);
   white-space:pre-wrap;word-break:break-word}
 .console{max-height:22rem;overflow:auto;min-width:0;margin:0}
-.prereqs{list-style:none;margin:0 0 14px;padding:0;display:flex;flex-direction:column;gap:12px}
+.prereqs{list-style:none;margin:6px 0 20px;padding:0;display:grid;gap:12px}
+.req{display:grid;grid-template-columns:40px 1fr;gap:14px;align-items:start;
+  padding:16px 18px;border:1px solid var(--border);border-radius:var(--radius);background:var(--surface-1)}
+.req-ok{border-color:#34d39926;background:#34d39908}
+.req-bad{border-color:#ff718f33;background:#ff718f08}
+.req-icon{display:grid;place-items:center;width:34px;height:34px;border-radius:50%;
+  font:700 15px/1 var(--font-mono)}
+.req-icon-ok{background:#34d3991f;color:var(--accent);border:1px solid #34d39955}
+.req-icon-missing{background:#ff718f1f;color:var(--error);border:1px solid #ff718f55}
+.req-icon-unknown{background:#e0c27a1f;color:var(--warning);border:1px solid #e0c27a55}
+.req-top{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.req-label{font-weight:600;font-size:.98rem}
+.req-pill{font:600 10.5px/1.4 var(--font-mono);letter-spacing:.1em;text-transform:uppercase;
+  padding:4px 11px;border-radius:999px}
+.req-pill-missing{color:var(--error);background:#ff718f14;border:1px solid #ff718f44}
+.req-pill-unknown{color:var(--warning);background:#e0c27a14;border:1px solid #e0c27a44}
+.req .hint{margin-top:5px}
 .prereq{display:flex;align-items:baseline;gap:10px}
 .dot-ok{background:var(--success);box-shadow:0 0 8px #10b98180}
 .dot-missing{background:var(--error)}
@@ -382,7 +408,7 @@ h1{margin:0 0 8px;font-size:clamp(1.5rem,3vw,2rem);letter-spacing:-.02em}
 .state-ok{color:var(--success)}.state-missing{color:var(--error)}.state-unknown{color:var(--warning)}
 .hint{display:block;color:var(--text-faint);font-size:.84rem;margin-top:2px}
 .stage-note{margin:0 0 18px;font-size:.88rem;color:var(--text-muted)}
-.panel-actions{display:flex;align-items:center;gap:14px}
+.panel-actions{display:flex;align-items:center;gap:14px;margin-top:26px}
 .card-optin{padding:14px 16px;margin:0 0 18px;border:1px solid var(--border);border-radius:var(--radius);
   background:var(--surface-1)}
 .vsteps{list-style:none;margin:14px 0 0;padding:0;display:flex;flex-direction:column;gap:10px}
