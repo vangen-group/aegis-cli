@@ -282,7 +282,7 @@ fetch('/api/plan').then(r=>r.json()).then(p=>{
               const li=document.createElement('li');li.className='step step-'+st.status;
               const icon=document.createElement('span');icon.className='step-icon';
               if(st.status==='running'){const sp=document.createElement('span');sp.className='spinner';icon.append(sp);}
-              else icon.textContent=st.status==='done'?'\u2713':'\u00B7';
+              else icon.textContent=st.status==='done'?'\u2713':st.status==='failed'?'\u2717':'\u00B7';
               const label=document.createElement('span');label.className='step-label';label.textContent=st.label;
               const stat=document.createElement('span');stat.className='step-status';stat.textContent=st.status==='running'?t['running']:t[st.status]||st.status;
               li.append(icon,label,stat);box.append(li);
@@ -303,7 +303,7 @@ fetch('/api/plan').then(r=>r.json()).then(p=>{
               st.textContent=LANG==='es'?'Volumen LUKS montado — listo para la instalación':'LUKS volume mounted — ready';
               el('to-install').hidden=false;
             } else {
-              el('volume-progress-count').textContent=LANG==='es'?'Falló — mirá la consola':'Failed — check the console';
+              el('volume-progress-count').textContent=p.error||(LANG==='es'?'Falló — mirá la consola':'Failed — check the console');
               el('volume-bar').classList.add('bar-error');
               el('volume-retry').hidden=false;
             }
@@ -321,10 +321,11 @@ fetch('/api/plan').then(r=>r.json()).then(p=>{
       return;
     }
     el('volume-go').onclick=async()=>{
-      if(!confirm(LANG==='es'?'Se creará un volumen LUKS nuevo. La CONSOLA te va a pedir la frase de paso y un YES — escríbelos ahí y volvé a mirar el wizard. ¿Continuar?':'A new LUKS volume will be created. The CONSOLE will ask for the passphrase and a YES — type them there, then come back to the wizard. Continue?'))return;
+      if(!confirm(LANG==='es'?'Se va a crear tu volumen cifrado. En la CONSOLA vas a elegir tu frase de paso (dos veces, para confirmarla); este wizard te avisa cuándo. ¿Continuar?':'Your encrypted volume will be created. On the CONSOLE you will choose your passphrase (twice, to confirm it); this wizard tells you when. Continue?'))return;
       VOLGO();
     };
-    el('volume-retry').onclick=()=>location.reload();
+    // Retry re-runs provisioning in place: a failed run rolled itself back.
+    el('volume-retry').onclick=()=>{el('volume-retry').hidden=true;el('volume-bar').classList.remove('bar-error');el('volume-steps').dataset.f='';VOLGO();};
   }).catch(()=>{});
   el('to-plan').disabled=BLOCKERS>0;
   // The plan rendered: step 2's Install button may now fire. (Lost in the
