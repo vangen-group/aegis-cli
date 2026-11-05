@@ -1,0 +1,20 @@
+Copyright (c) 2026 Vanguard Engine Group (VANGEN). All rights reserved.
+
+This repository — including the `aegis` command-line interface, its Node
+helpers, the installer, the scripts, the documentation and any build artifacts
+derived from them — is proprietary and confidential property of Vanguard Engine
+Group.
+
+No licence or permission is granted, expressly or by implication, to use, copy,
+modify, translate, distribute, sublicense, sell or otherwise exploit any part of
+it, in source or binary form, without a prior written agreement with Vanguard
+Engine Group. Access to this repository does not transfer any intellectual
+property rights.
+
+Third-party components downloaded or executed at install or run time (for
+example the cosign binary fetched by `install.sh`, or the Node runtime) stay
+under their own terms and licences; for those components their terms prevail.
+
+This material is provided "as is", without warranty of any kind, express or
+implied, including but not limited to the warranties of merchantability,
+fitness for a particular purpose and non-infringement.

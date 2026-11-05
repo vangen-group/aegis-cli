@@ -3,9 +3,11 @@
 ## Installation
 
 ```bash
-# Copy to PATH
-cp bin/aegis ~/bin/
-chmod +x ~/bin/aegis
+# First install: the signed standalone installer
+curl -fsSL https://raw.githubusercontent.com/vangen-group/aegis-cli/master/install.sh | bash
+
+# Later updates: handled by the CLI itself
+aegis update
 
 # Verify
 aegis --version
@@ -80,7 +82,7 @@ aegis secret show database/prod
 aegis secret edit database/prod
 
 # List secrets
-aegis secret ls
+aegis secret list
 
 # Set environment variables (session-only)
 aegis shell --env auto
@@ -151,8 +153,11 @@ aegis disconnect database-network
 
 ```bash
 aegis update --verbose        # Enable detailed logging
-aegis update --dry-run        # Preview changes without applying
 ```
+
+> `--dry-run` exists for `shell` and `herdr` (prints the docker commands
+> without running them, or set `AEGIS_DRY_RUN=1`); `aegis update` has no
+> dry-run mode.
 
 ### Shell Flags
 
