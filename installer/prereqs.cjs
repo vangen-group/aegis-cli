@@ -11,6 +11,7 @@ const HINTS = {
         'enable virtualization in your BIOS/UEFI firmware (Intel VT-x / AMD-V), then run this installer again',
     wsl2: 'in an Administrator PowerShell run: dism.exe /online /enable-feature /featurename:Microsoft-Windows-Subsystem-Linux /all /norestart && dism.exe /online /enable-feature /featurename:VirtualMachinePlatform /all /norestart && wsl --update && wsl --set-default-version 2 — then RESTART Windows and verify with wsl --status (Default Version: 2). Docker Desktop needs this backend',
     docker: 'install Docker Desktop (docker.com) — on Windows enable the WSL2 backend first; then start it and run this installer again',
+    dockerLinux: 'install Docker Engine for your distribution (docs.docker.com/engine/install) and start the service, then run this installer again',
 };
 
 // docker info answers both "installed" and "running" in one probe.
@@ -25,7 +26,7 @@ function collectPrereqs({ platform = process.platform, runner } = {}) {
             return { status: e.status ?? 1, stdout: e.stdout || '', stderr: e.stderr || String(e.message || e) };
         }
     });
-    const check = (id, label, probe) => {
+    const check = (id, label, probe, hint = HINTS[id]) => {
         let state = 'unknown';
         try {
             const r = probe(run);
@@ -36,7 +37,7 @@ function collectPrereqs({ platform = process.platform, runner } = {}) {
         return { id, label, state, hint: HINTS[id] };
     };
     if (platform === 'darwin') {
-        // macOS needs no virtualization/WSL check — Docker only.
+        // macOS needs no virtualization/WSL check — Docker Desktop only.
         return [check('docker', 'Docker Desktop running', dockerProbe)];
     }
     if (platform === 'win32') {
@@ -51,10 +52,10 @@ function collectPrereqs({ platform = process.platform, runner } = {}) {
         ];
     }
     // Linux: the workstation later needs KVM for the sandbox, and Docker
-    // everywhere — the whole aegis chain runs on it.
+    // Engine (not Docker Desktop — that product does not exist here).
     return [
         check('virtualization', 'KVM available', (r) => fs.existsSync('/dev/kvm') && r('test', ['-w', '/dev/kvm']).status === 0),
-        check('docker', 'Docker Desktop running', dockerProbe),
+        check('docker', 'Docker engine running', dockerProbe, HINTS.dockerLinux),
     ];
 }
 
