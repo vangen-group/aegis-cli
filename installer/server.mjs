@@ -83,16 +83,21 @@ const PLANS = {
   },
 };
 const PLATFORM = detectPlatform();
-const plan = () => {
+// i18n: the language cookie decides hints and UI strings. Spanish is the
+// default (owner decision); the wizard's toggle sets the cookie and reloads.
+
+const planLang = (cookieHeader) => /(?:^|;)\s*aegis_lang=en(?:;|$)/.test(cookieHeader || "") ? "en" : "es";
+const plan = (lang) => {
   const p = PLANS[PLATFORM] || PLANS.linux;
   return {
     platform: PLATFORM,
+    lang,
     sections: p.sections,
     steps: [
       `bash ${installSh}   # download the latest signed aegis-cli release,`,
       "                   # verify it with cosign, then install into ~/bin",
     ],
-    prereqs: collectPrereqs({ platform: p.prereqsPlatform }),
+    prereqs: collectPrereqs({ platform: p.prereqsPlatform, lang }),
     next: "after installing, run: aegis install <license-id>",
   };
 };
@@ -126,7 +131,7 @@ createServer(async (req, res) => {
   if (url.pathname === "/") return send(200, HTML, "text/html; charset=utf-8");
   if (url.pathname === "/wizard.js") return send(200, JS, "text/javascript");
   if (url.pathname === "/wizard.css") return send(200, CSS, "text/css");
-  if (url.pathname === "/api/plan") return send(200, JSON.stringify(plan()), "application/json");
+  if (url.pathname === "/api/plan") return send(200, JSON.stringify(plan(planLang(req.headers.cookie))), "application/json");
   if (url.pathname === "/api/log") return send(200, log);
   if (url.pathname === "/api/progress") {
     // T10: install.sh logs an explicit [step] started/finished protocol; the
