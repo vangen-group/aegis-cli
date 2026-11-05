@@ -101,8 +101,10 @@
 #                          overwriting existing files; --replace overwrites.
 #   export <path> [--dest <dir>]
 #                          Copy a file/dir from inside /workspace/code out to
-#                          the host (default dest:
-#                          C:/Aegis/exports) — the one explicit, user-driven
+#                          the host (default dest: C:/Aegis/exports, or
+#                          ~/Aegis/exports when running inside WSL2 — the
+#                          distro is the workspace, nothing is written to the
+#                          Windows host) — the one explicit, user-driven
 #                          host channel this template still allows.
 #   import <host-path> <path>
 #                          Copy a host file/dir INTO /workspace/code. <path> is
@@ -218,7 +220,7 @@
 #   AEGIS_BACKUP_DIR        Default destination for `aegis backup`. Default:
 #                           C:/Aegis/backups (created if missing).
 #   AEGIS_EXPORT_DIR        Default destination for `aegis export`. Default:
-#                           C:/Aegis/exports (created if missing).
+#                           C:/Aegis/exports (~/Aegis/exports inside WSL2; created if missing).
 #   AEGIS_PROFILE_STORE_PATH
 #                           T38: container-side path where `aegis profile use`
 #                           stores the chosen OpenCode provider profile — the
@@ -364,8 +366,22 @@ VOL_ENGRAM="aegis-workstation-engram-data"
 # sha256sum — everything backup/restore/export/import need, nothing more.
 BACKUP_IMAGE="alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc"
 
-DEFAULT_BACKUP_DIR="${AEGIS_BACKUP_DIR:-C:/Aegis/backups}"
-DEFAULT_EXPORT_DIR="${AEGIS_EXPORT_DIR:-C:/Aegis/exports}"
+# Default host-channel destinations. A C:/Aegis/... default assumes a Windows
+# host with Docker Desktop sharing C:. This template's contract is the opposite
+# (T9 containment): everything lives INSIDE the WSL2 Ubuntu distro, and the
+# daemon is a Linux docker that mis-parses "C:/..." mounts ("invalid mode").
+# So: on WSL2 the default is a distro path; elsewhere (Docker Desktop, native
+# Linux) the historic Windows default stays for compatibility.
+_aegis_in_wsl() {
+    [[ "$(uname -s)" == "Linux" ]] && grep -qi microsoft /proc/version 2>/dev/null
+}
+if _aegis_in_wsl; then
+    DEFAULT_BACKUP_DIR="${AEGIS_BACKUP_DIR:-$HOME/Aegis/backups}"
+    DEFAULT_EXPORT_DIR="${AEGIS_EXPORT_DIR:-$HOME/Aegis/exports}"
+else
+    DEFAULT_BACKUP_DIR="${AEGIS_BACKUP_DIR:-C:/Aegis/backups}"
+    DEFAULT_EXPORT_DIR="${AEGIS_EXPORT_DIR:-C:/Aegis/exports}"
+fi
 
 SECRET_ENV_ARGS=(-e GH_TOKEN -e ANTHROPIC_API_KEY -e GIT_AUTHOR_NAME
     -e GIT_AUTHOR_EMAIL -e GIT_COMMITTER_NAME -e GIT_COMMITTER_EMAIL)
