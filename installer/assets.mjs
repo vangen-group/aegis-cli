@@ -161,6 +161,9 @@ fetch('/api/plan').then(r=>r.json()).then(p=>{
   }
   if(!(p.prereqs||[]).length)el('prereqs').innerHTML='<li class="prereq"><span class="dot dot-ok"></span><span><strong>All good — nothing else is needed on this platform.</strong></span></li>';
   el('to-plan').disabled=BLOCKERS>0;
+  // The plan rendered: step 2's Install button may now fire. (Lost in the
+  // staged-UI rewrite: confirm started disabled and nothing re-enabled it.)
+  el('confirm').disabled=false;
   el('reqs-note').textContent=BLOCKERS>0
     ? BLOCKERS+' requirement'+(BLOCKERS>1?'s':'')+' missing — fix '+(BLOCKERS>1?'them':'it')+' and reload this page.'
     : 'Everything is in place. Continue when ready.';
