@@ -16,7 +16,10 @@ export const HTML = `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <div class="backdrop" aria-hidden="true"></div>
 <header class="topbar">
   <p class="wordmark"><span class="wordmark-mark" aria-hidden="true">A</span> Aegis <span class="wordmark-accent">CLI</span></p>
-  <p class="topbar-note"><span class="dot" aria-hidden="true"></span> Local installer</p>
+  <div class="topbar-actions">
+    <p class="topbar-note"><span class="dot" aria-hidden="true"></span> <span data-i18n="local">Instalador local</span></p>
+    <button id="lang" class="btn btn-ghost btn-lang" title="Español / English">EN</button>
+  </div>
 </header>
 <main>
   <nav aria-label="Installation progress">
@@ -31,42 +34,42 @@ export const HTML = `<!doctype html><html lang="en"><head><meta charset="utf-8">
   <div class="view">
     <section class="panel" id="card-reqs" aria-labelledby="reqs-title">
       <p class="eyebrow">Step 1 of 4 &middot; Check</p>
-      <h1 id="reqs-title" tabindex="-1">Checking this computer</h1>
-      <p class="lead">We look at virtualization, WSL2 and Docker before anything else. On Windows everything is installed inside your WSL2 Ubuntu environment — nothing stays on the host. Nothing changes on this machine until you confirm a plan.</p>
-      <ul id="prereqs" class="prereqs"><li class="prereq"><span class="dot dot-unknown"></span>Checking your machine…</li></ul>
-      <p class="stage-note" id="reqs-note">Waiting for checks…</p>
+      <h1 id="reqs-title" tabindex="-1" data-i18n="reqs-title">Verificando esta computadora</h1>
+      <p class="lead" data-i18n="reqs-lead">Primero miramos virtualización, WSL2 y Docker. En Windows todo se instala dentro de tu entorno Ubuntu de WSL2 — nada queda en el host. Nada cambia en esta máquina hasta que confirmes un plan.</p>
+      <ul id="prereqs" class="prereqs"><li class="prereq"><span class="dot dot-unknown"></span><span data-i18n="checking">Verificando tu máquina…</span></li></ul>
+      <p class="stage-note" id="reqs-note" data-i18n="waiting">Esperando los checks…</p>
       <div class="panel-actions">
-        <button id="to-plan" class="btn btn-primary" disabled>Review the plan</button>
+        <button id="to-plan" class="btn btn-primary" disabled data-i18n="review">Ver el plan</button>
       </div>
     </section>
 
     <section class="panel" id="card-plan" aria-labelledby="plan-title" hidden>
-      <p class="eyebrow">Step 2 of 4 &middot; Review</p>
-      <h1 id="plan-title" tabindex="-1">Confirm the plan</h1>
-      <p class="lead">This installer will run exactly these steps. Read them — nothing installs until you press Install.</p>
+      <p class="eyebrow" data-i18n="eyebrow2">Paso 2 de 4 · Revisar</p>
+      <h1 id="plan-title" tabindex="-1" data-i18n="plan-title">Confirmá el plan</h1>
+      <p class="lead" data-i18n="plan-lead">Este instalador va a correr exactamente estos pasos. Leelos — nada se instala hasta que aprietes Instalar.</p>
       <pre id="plan" class="terminal">loading…</pre>
       <section class="card-optin">
         <label class="optin">
           <input type="checkbox" id="telemetry">
           <span class="optin-body">
-            <strong>Send anonymous usage statistics to Vangen</strong>
-            <small>Opt-in and off by default. No code, paths, or secrets — just which commands are used.</small>
+            <strong data-i18n="tel-strong">Enviar estadísticas anónimas de uso a Vangen</strong>
+            <small data-i18n="tel-small">Opt-in y apagado por defecto. Sin código, rutas ni secretos — solo qué comandos se usan.</small>
           </span>
         </label>
       </section>
       <div class="panel-actions">
-        <button id="back" class="btn btn-ghost">Back</button>
-        <button id="confirm" class="btn btn-primary" disabled>Install Aegis CLI</button>
+        <button id="back" class="btn btn-ghost" data-i18n="back">Volver</button>
+        <button id="confirm" class="btn btn-primary" disabled data-i18n="install">Instalar Aegis CLI</button>
       </div>
     </section>
 
     <section class="panel" id="card-run" aria-labelledby="run-title" hidden>
-      <p class="eyebrow">Step 3 of 4 &middot; Install</p>
-      <h1 id="run-title" tabindex="-1">Installing Aegis CLI</h1>
-      <p class="lead">The installer output streams below. Closing this tab does not stop it.</p>
+      <p class="eyebrow" data-i18n="eyebrow3">Paso 3 de 4 · Instalar</p>
+      <h1 id="run-title" tabindex="-1" data-i18n="run-title">Instalando Aegis CLI</h1>
+      <p class="lead" data-i18n="run-lead">La salida del instalador se muestra en la consola. Cerrar esta pestaña no lo detiene.</p>
       <div class="progress">
         <div class="progress-head">
-          <span class="progress-title">Progress</span>
+          <span class="progress-title" data-i18n="progress">Progreso</span>
           <span class="progress-count" id="progress-count">Starting…</span>
         </div>
         <div role="progressbar" aria-label="Install progress"><div class="bar" id="bar"></div></div>
@@ -74,15 +77,15 @@ export const HTML = `<!doctype html><html lang="en"><head><meta charset="utf-8">
       </div>
       <p id="next" class="next"></p>
       <div class="panel-actions">
-        <button id="done" class="btn btn-primary" hidden>Finish</button>
-        <button id="retry" class="btn btn-ghost" hidden>Back to the plan</button>
+        <button id="done" class="btn btn-primary" hidden data-i18n="finish">Terminar</button>
+        <button id="retry" class="btn btn-ghost" hidden data-i18n="retry">Volver al plan</button>
       </div>
     </section>
 
     <section class="panel" id="card-done" aria-labelledby="done-title" hidden>
-      <p class="eyebrow">Step 4 of 4 &middot; Done</p>
-      <h1 id="done-title" tabindex="-1">Aegis CLI is installed</h1>
-      <p class="lead" id="done-lead">Your next step is the first journey: activate your license and bring up the workstation.</p>
+      <p class="eyebrow" data-i18n="eyebrow4">Paso 4 de 4 · Listo</p>
+      <h1 id="done-title" tabindex="-1" data-i18n="done-title">Aegis CLI está instalado</h1>
+      <p class="lead" id="done-lead" data-i18n="done-lead">Tu siguiente paso es el primer viaje: activá tu licencia y levantá la workstation.</p>
       <p id="next-done" class="next-command"></p>
       <div class="panel-actions">
         <button id="finish" class="btn btn-primary">Finish</button>
@@ -146,17 +149,34 @@ function startRun(){
         if(st.status==='running'){const sp=document.createElement('span');sp.className='spinner';icon.append(sp);}
         else icon.textContent=st.status==='done'?'\u2713':st.status==='failed'?'\u2717':'\u00B7';
         const label=document.createElement('span');label.className='step-label';label.textContent=st.label;
-        const stat=document.createElement('span');stat.className='step-status';stat.textContent=st.status==='running'?'in progress':st.status;
+        const t=I18N[window.__aegisLang||'es'];
+        const stat=document.createElement('span');stat.className='step-status';stat.textContent=st.status==='running'?t['running']:t[st.status]||st.status;
         li.append(icon,label,stat);box.append(li);
       }
       box.dataset.fingerprint=next.join(',');
       el('bar').style.width=Math.max(6,Math.round(100*(p.done||0)/(p.total||4)))+'%';
       if(!p.finished){
         const run=(p.steps||[]).find(x=>x.status==='running');
-        el('progress-count').textContent='Step '+Math.min((p.done||0)+1,p.total||4)+' of '+(p.total||4)+(run?' — '+run.label.toLowerCase():'');
+        const t=I18N[window.__aegisLang||'es'];
+        el('progress-count').textContent=t['step-of'](Math.min((p.done||0)+1,p.total||4),p.total||4)+(run?' — '+run.label.toLowerCase():'');
       }
     }).catch(()=>{});
   },400);
+}
+const I18N = {
+  es: {'local':'Instalador local','reqs-title':'Verificando esta computadora','checking':'Verificando tu máquina…','waiting':'Esperando los checks…','review':'Ver el plan','plan-title':'Confirmá el plan','back':'Volver','install':'Instalar Aegis CLI','run-title':'Instalando Aegis CLI','progress':'Progreso','finish':'Terminar','retry':'Volver al plan','done-title':'Aegis CLI está instalado',
+    'eyebrow1':'Paso 1 de 4 · Check','eyebrow2':'Paso 2 de 4 · Revisar','eyebrow3':'Paso 3 de 4 · Instalar','eyebrow4':'Paso 4 de 4 · Listo',
+    'running':'en progreso','done':'hecho','pending':'pendiente','failed':'falló',
+    'step-of':(a,b)=>'Paso '+a+' de '+b},
+  en: {'local':'Local installer','reqs-title':'Checking this computer','checking':'Checking your machine…','waiting':'Waiting for checks…','review':'Review the plan','plan-title':'Confirm the plan','back':'Back','install':'Install Aegis CLI','run-title':'Installing Aegis CLI','progress':'Progress','finish':'Finish','retry':'Back to the plan','done-title':'Aegis CLI is installed',
+    'eyebrow1':'Step 1 of 4 · Check','eyebrow2':'Step 2 of 4 · Review','eyebrow3':'Step 3 of 4 · Install','eyebrow4':'Step 4 of 4 · Done',
+    'running':'in progress','done':'done','pending':'pending','failed':'failed',
+    'step-of':(a,b)=>'Step '+a+' of '+b},
+};
+function applyLang(lang){
+  const t=I18N[lang]||I18N.es;
+  document.querySelectorAll('[data-i18n]').forEach(n=>{const k=n.dataset.i18n; if(t[k])n.textContent=t[k];});
+  const b=el('lang'); if(b)b.textContent=lang==='es'?'EN':'ES';
 }
 let pnext='';
 const pollLog=setInterval(()=>fetch('/api/log').then(r=>r.text()).then(t2=>{
@@ -188,6 +208,8 @@ fetch('/api/plan').then(r=>r.json()).then(p=>{
     li.append(dot,text);el('prereqs').append(li);
   }
   if(!(p.prereqs||[]).length)el('prereqs').innerHTML='<li class="prereq"><span class="dot dot-ok"></span><span><strong>All good — nothing else is needed on this platform.</strong></span></li>';
+  window.__aegisLang=p.lang||'es';
+  applyLang(window.__aegisLang);
   el('to-plan').disabled=BLOCKERS>0;
   // The plan rendered: step 2's Install button may now fire. (Lost in the
   // staged-UI rewrite: confirm started disabled and nothing re-enabled it.)
@@ -201,7 +223,12 @@ el('back').onclick=()=>go(1);
 el('confirm').onclick=()=>{el('confirm').disabled=true;startRun();};
 el('retry').onclick=()=>location.reload();
 el('done').onclick=()=>go(4);
-el('finish').onclick=()=>window.close();`;
+el('finish').onclick=()=>window.close();
+el('lang').onclick=()=>{
+  const cur=window.__aegisLang||'es';
+  const next=cur==='es'?'en':'es';
+  document.cookie='aegis_lang='+next+'; SameSite=Strict';
+  location.reload();};`;
 export const CSS = `:root{color-scheme:dark;
 --bg:#0b0f0d;--bg-deep:#050807;--surface:#111815;--surface-1:#15201b;--surface-2:#1d2b24;
 --border:#22322a;--border-soft:#ffffff12;--text:#eef5f1;--text-muted:#9db3a8;--text-faint:#6d8378;
