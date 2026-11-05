@@ -117,3 +117,9 @@
   ~/.local/state/aegis-cli/install-state; re-run salta los terminados
   ([step] skipped) y sigue; journal se invalida si cambia el tag. Pendiente:
   toggle ES/EN del UI del wizard (el server ya es bilingüe, default ES).
+- T4 HECHO (feat/volume-states): installer/volume.cjs detecta los 3 estados
+  del volumen LUKS (missing/sealed/mounted, docs/17 §7) SOLO con probes
+  read-only; /api/volume/state expone estado + guía de aprovisionamiento §4
+  bilingüe; /api/volume/verify verifica cada paso de forma estrictamente
+  read-only (sin luksFormat/luksOpen/mount — la frase de paso jamás toca el
+  server). Tests 17/17.

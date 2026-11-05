@@ -6,6 +6,7 @@ import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { HTML, JS, CSS } from "./assets.mjs";
 import { collectPrereqs } from "./prereqs.cjs";
+import { volumeState, verifyStep, PROVISIONING } from "./volume.cjs";
 import { writeFileSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -146,6 +147,23 @@ createServer(async (req, res) => {
   if (url.pathname === "/wizard.css") return send(200, CSS, "text/css");
   if (url.pathname === "/api/plan") return send(200, JSON.stringify(plan(planLang(req.headers.cookie))), "application/json");
   if (url.pathname === "/api/log") return send(200, log);
+  // T4: LUKS secure volume — state detection and READ-ONLY verification of
+  // the provisioning steps. The passphrase never touches this server.
+  if (url.pathname === "/api/volume/state") {
+    return send(200, JSON.stringify({ ...volumeState(), provisioning: PROVISIONING.map((p) => ({ id: p.id, text: p[planLang(req.headers.cookie)] || p.en })) }), "application/json");
+  }
+  if (url.pathname === "/api/volume/verify" && req.method === "POST") {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      let id = "";
+      try { id = JSON.parse(body || "{}").step || ""; } catch {}
+      if (!PROVISIONING.some((p) => p.id === id)) return send(400, "unknown step");
+      const r = verifyStep(id);
+      return send(200, JSON.stringify({ step: id, ...r }), "application/json");
+    });
+    return;
+  }
   if (url.pathname === "/api/progress") {
     // T10: install.sh logs an explicit [step] started/finished protocol; the
     // first started-but-not-finished step is running (gentle-shell's rule).
