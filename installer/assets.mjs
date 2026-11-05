@@ -31,7 +31,7 @@ export const HTML = `<!doctype html><html lang="en"><head><meta charset="utf-8">
     <section class="panel" id="card-reqs" aria-labelledby="reqs-title">
       <p class="eyebrow">Step 1 of 4 &middot; Check</p>
       <h1 id="reqs-title" tabindex="-1">Checking this computer</h1>
-      <p class="lead">We look at virtualization, WSL2 and Docker before anything else. Nothing changes on this machine until you confirm a plan.</p>
+      <p class="lead">We look at virtualization, WSL2 and Docker before anything else. On Windows everything is installed inside your WSL2 Ubuntu environment — nothing stays on the host. Nothing changes on this machine until you confirm a plan.</p>
       <ul id="prereqs" class="prereqs"><li class="prereq"><span class="dot dot-unknown"></span>Checking your machine…</li></ul>
       <p class="stage-note" id="reqs-note">Waiting for checks…</p>
       <div class="panel-actions">

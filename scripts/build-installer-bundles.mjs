@@ -15,7 +15,23 @@ mkdirSync(join(work, "installer"), { recursive: true });
 cpSync(join(root, "installer"), join(work, "installer"), { recursive: true });
 cpSync(join(root, "install.sh"), join(work, "install.sh"));
 writeFileSync(join(work, "Install Aegis CLI.command"), `#!/bin/sh\ncd "$(dirname "$0")" && exec sh installer/bootstrap.sh\n`);
-writeFileSync(join(work, "Install Aegis CLI.cmd"), `@echo off\r\ncd /d "%~dp0" && bash installer/bootstrap.sh\r\n`);
+writeFileSync(join(work, "Install Aegis CLI.cmd"), [
+  "@echo off",
+  "rem Everything installs INSIDE the WSL2 Ubuntu environment - the Windows host",
+  "rem only holds this zip. Relaunch the bootstrap inside WSL when available.",
+  "where wsl.exe >nul 2>nul",
+  "if %errorlevel%==0 (",
+  "  wsl -e sh -c \"cd '$(wslpath '%~dp0')' && exec sh installer/bootstrap.sh\"",
+  ") else (",
+  "  echo Aegis CLI needs WSL2 ^(Ubuntu^) first.",
+  "  echo In an Administrator PowerShell run:",
+  "  echo   dism.exe /online /enable-feature /featurename:Microsoft-Windows-Subsystem-Linux /all /norestart",
+  "  echo   dism.exe /online /enable-feature /featurename:VirtualMachinePlatform /all /norestart",
+  "  echo   wsl --update ^&^& wsl --set-default-version 2",
+  "  echo Then RESTART Windows and double-click this installer again.",
+  "  pause",
+  ")",
+].join("\r\n") + "\r\n");
 for (const [zip] of [["aegis-installer-macos.zip"], ["aegis-installer-windows.zip"]]) {
   // `zip` is not always installed (CI images, WSL minimal); fall back to
   // python3's zipfile module, which is present wherever python3 is.

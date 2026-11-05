@@ -43,12 +43,12 @@ const plan = () => ({
     {
       title: "Install the CLI into ~/bin",
       needs: "write access to ~/bin",
-      detail: "Copies the aegis launcher. If a previous install exists it updates in place — environments, secrets and license are untouched.",
+      detail: "Copies the aegis launcher into ~/bin — inside your WSL2 Ubuntu environment on Windows, nothing is written to the host.",
     },
     {
       title: "Then: bring up the workstation",
       needs: "Docker + virtualization — that is what the checks above verify",
-      detail: "The CLI alone is ready after step 3. When you run 'aegis install <license-id>' it downloads and runs the signed workstation image — that is where Docker and virtualization are used.",
+      detail: "The CLI alone is ready after step 3. When you run 'aegis install <license-id>' it downloads and runs the signed workstation image — that is where Docker and virtualization are used. Everything lives inside the WSL2 Ubuntu environment on Windows; the host only had the zip.",
     },
   ],
   steps: [
