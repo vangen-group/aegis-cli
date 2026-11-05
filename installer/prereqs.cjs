@@ -1,7 +1,7 @@
-// install-wizard T2: platform prerequisite detection with injectable runner
-// so tests never probe the real machine. CommonJS on purpose: the launcher
-// node may be old; keep the installer server surface CJS/ESM consistent
-// (server.mjs imports only this file and assets.mjs).
+// install-wizard T2/T6/T7: platform prerequisite detection with injectable
+// runner so tests never probe the real machine. AEGIS_INSTALLER_DEMO=1
+// simulates everything green so the full wizard flow can be walked without
+// the real prerequisites. CommonJS on purpose: the launcher node may be old.
 'use strict';
 const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');
@@ -12,13 +12,31 @@ const HINTS = {
     wsl2: 'in an Administrator PowerShell run: dism.exe /online /enable-feature /featurename:Microsoft-Windows-Subsystem-Linux /all /norestart && dism.exe /online /enable-feature /featurename:VirtualMachinePlatform /all /norestart && wsl --update && wsl --set-default-version 2 — then RESTART Windows and verify with wsl --status (Default Version: 2). Docker Desktop needs this backend',
     docker: 'install Docker Desktop (docker.com) — on Windows enable the WSL2 backend first; then start it and run this installer again',
     dockerLinux: 'install Docker Engine for your distribution (docs.docker.com/engine/install) and start the service, then run this installer again',
+    aegis: 'already installed — the installer will update it in place (your environments, secrets and license are untouched)',
 };
 
 // docker info answers both "installed" and "running" in one probe.
 const dockerProbe = (r) => r('docker', ['info']).status === 0;
 
-// Returns [{id,label,state:'ok'|'missing'|'unknown',hint}]. Never throws.
-function collectPrereqs({ platform = process.platform, runner } = {}) {
+// T7: an existing aegis install is information, not a blocker. install.sh
+// reinstalls flat into ~/bin, leaving every config/secrets file untouched.
+const aegisCheck = (r) => {
+    const out = r('aegis', ['--version']);
+    return out.status !== 0
+        ? { ok: true, label: 'Aegis CLI not installed yet — a fresh install it is' }
+        : { ok: true, state: 'info', label: `Aegis CLI ${out.stdout.trim().replace(/^aegis\s*/i, '')} is already installed — the installer updates it in place` };
+};
+
+// Returns [{id,label,state:'ok'|'missing'|'unknown'|'info',hint}]. Never throws.
+function collectPrereqs({ platform = process.platform, runner, demo = process.env.AEGIS_INSTALLER_DEMO === '1' } = {}) {
+    if (demo) {
+        return [
+            { id: 'virtualization', label: 'Virtualization enabled in firmware', state: 'ok', hint: HINTS.virtualization },
+            { id: 'wsl2', label: 'WSL2 installed', state: 'ok', hint: HINTS.wsl2 },
+            { id: 'docker', label: 'Docker Desktop running', state: 'ok', hint: HINTS.docker },
+            { id: 'aegis', label: 'Aegis CLI 0.0.0-demo is already installed — the installer updates it in place', state: 'info', hint: HINTS.aegis },
+        ];
+    }
     const run = runner || ((cmd, args) => {
         try {
             return { status: 0, stdout: execFileSync(cmd, args, { encoding: 'utf8', timeout: 10000 }), stderr: '' };
@@ -28,17 +46,19 @@ function collectPrereqs({ platform = process.platform, runner } = {}) {
     });
     const check = (id, label, probe, hint = HINTS[id]) => {
         let state = 'unknown';
+        let resolvedLabel = label;
         try {
             const r = probe(run);
-            state = r ? 'ok' : 'missing';
+            state = r.state || (r ? 'ok' : 'missing');
+            if (r.label) resolvedLabel = r.label;
         } catch {
             state = 'unknown';
         }
-        return { id, label, state, hint: HINTS[id] };
+        return { id, label: resolvedLabel, state, hint };
     };
     if (platform === 'darwin') {
         // macOS needs no virtualization/WSL check — Docker Desktop only.
-        return [check('docker', 'Docker Desktop running', dockerProbe)];
+        return [check('docker', 'Docker Desktop running', dockerProbe), check('aegis', '', aegisCheck, HINTS.aegis)];
     }
     if (platform === 'win32') {
         return [
@@ -49,6 +69,7 @@ function collectPrereqs({ platform = process.platform, runner } = {}) {
             ),
             check('wsl2', 'WSL2 installed', (r) => r('wsl.exe', ['--status']).status === 0),
             check('docker', 'Docker Desktop running', dockerProbe),
+            check('aegis', '', aegisCheck, HINTS.aegis),
         ];
     }
     // Linux: the workstation later needs KVM for the sandbox, and Docker
@@ -56,6 +77,7 @@ function collectPrereqs({ platform = process.platform, runner } = {}) {
     return [
         check('virtualization', 'KVM available', (r) => fs.existsSync('/dev/kvm') && r('test', ['-w', '/dev/kvm']).status === 0),
         check('docker', 'Docker engine running', dockerProbe, HINTS.dockerLinux),
+        check('aegis', '', aegisCheck, HINTS.aegis),
     ];
 }
 
