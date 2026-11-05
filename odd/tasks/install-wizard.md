@@ -110,3 +110,8 @@
   CSS. Fix: actualización in-place con fingerprint de estados; el spinner
   solo se crea cuando un paso entra en running y su DOM no se toca hasta que
   cambia de estado.
+- S7 (2026-11-05, pedido del dueño): "idempotencia de instalacion... capaz de
+  seguir en un paso si se quedo trabado". Journal de pasos en
+  ~/.local/state/aegis-cli/install-state; re-run salta los terminados
+  ([step] skipped) y sigue; journal se invalida si cambia el tag. Pendiente:
+  toggle ES/EN del UI del wizard (el server ya es bilingüe, default ES).
