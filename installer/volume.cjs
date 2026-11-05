@@ -6,8 +6,16 @@
 'use strict';
 const { execFileSync } = require('node:child_process');
 
-const IMG = process.env.AEGIS_VOLUME_IMG || `${process.env.HOME || '/root'}/aegis_secure.img`;
-const MNT = process.env.AEGIS_VOLUME_MNT || '/mnt/aegis_secure';
+// T13: test-volume mode — completely different names so provisioning can be
+// exercised without ever touching a real volume. Test paths MUST contain
+// "test" (cleanup refuses otherwise).
+const isTest = () => process.env.AEGIS_INSTALLER_TEST_VOLUME === '1';
+const paths = () => ({
+    img: process.env.AEGIS_VOLUME_IMG || `${process.env.HOME || '/root'}/${isTest() ? 'aegis_secure_test.img' : 'aegis_secure.img'}`,
+    mnt: process.env.AEGIS_VOLUME_MNT || (isTest() ? '/mnt/aegis_secure_test' : '/mnt/aegis_secure'),
+    mapper: isTest() ? 'aegis_vol_test' : 'aegis_vol',
+    isTest: isTest(),
+});
 
 const defaultRunner = (cmd, args) => {
     try {
@@ -20,6 +28,7 @@ const defaultRunner = (cmd, args) => {
 // → {state:'missing'|'sealed'|'mounted'|'unknown', img, mnt}
 function volumeState({ runner } = {}) {
     const run = runner || defaultRunner;
+    const { img: IMG, mnt: MNT } = paths();
     try {
         if (run('test', ['-f', IMG]).status !== 0) {
             return { state: 'missing', img: IMG, mnt: MNT };
@@ -41,6 +50,7 @@ function volumeState({ runner } = {}) {
 // cryptsetup luksFormat/luksOpen or mount — only observes results.
 function verifyStep(id, { runner } = {}) {
     const run = runner || defaultRunner;
+    const { img: IMG, mnt: MNT } = paths();
     const checks = {
         'create-image': () => run('test', ['-f', IMG]).status === 0 && Number(run('stat', ['-c', '%s', IMG]).stdout || 0) > 0,
         'associate-loop': () => run('sudo', ['losetup', '-j', IMG]).status === 0 && run('sudo', ['losetup', '-j', IMG]).stdout.trim() !== '',

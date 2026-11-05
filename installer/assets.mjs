@@ -226,6 +226,18 @@ fetch('/api/plan').then(r=>r.json()).then(p=>{
   fetch('/api/volume/state').then(r=>r.json()).then(v=>{
     const t=VOL[LANG]||VOL.es;
     const dot=el('volume-dot'), st=el('volume-state');
+    // T13: in test-volume mode, a cleanup button removes the test volume
+    // (never a real one — the server refuses non-test paths).
+    if(v.isTest && v.state!=='missing'){
+      const cb=document.createElement('button');cb.className='btn btn-ghost btn-verify';
+      cb.textContent=LANG==='es'?'Eliminar volumen de prueba':'Delete test volume';
+      cb.style.marginLeft='10px';
+      cb.onclick=async()=>{cb.disabled=true;
+        await fetch('/api/volume/cleanup',{method:'POST'});
+        st.textContent=LANG==='es'?'volumen de prueba eliminado':'test volume removed';
+        dot.className='dot dot-missing';cb.hidden=true;};
+      st.after(cb);
+    }
     dot.className='dot '+(v.state==='mounted'?'dot-ok':v.state==='sealed'?'dot-unknown':'dot-missing');
     st.textContent=t[v.state]||v.state;
     if(v.state!=='missing')return;

@@ -4,26 +4,45 @@
 // in the inherited TTY — the wizard server NEVER sees them. The destructive
 // step (luksFormat) refuses to run without an explicit consent flag.
 'use strict';
-const IMG = process.env.AEGIS_VOLUME_IMG || `${process.env.HOME || '/root'}/aegis_secure.img`;
-const MNT = process.env.AEGIS_VOLUME_MNT || '/mnt/aegis_secure';
-const LOOP = process.env.AEGIS_VOLUME_LOOP || ''; // set after associate-loop (from losetup output)
+// Test-volume mode (T13): distinct names so tests/provisioning never touch
+// real volumes. Cleanup (delete-test) refuses any path without "test".
+const isTest = () => process.env.AEGIS_INSTALLER_TEST_VOLUME === '1';
+const paths = () => ({
+    img: process.env.AEGIS_VOLUME_IMG || `${process.env.HOME || '/root'}/${isTest() ? 'aegis_secure_test.img' : 'aegis_secure.img'}`,
+    mnt: process.env.AEGIS_VOLUME_MNT || (isTest() ? '/mnt/aegis_secure_test' : '/mnt/aegis_secure'),
+    mapper: isTest() ? 'aegis_vol_test' : 'aegis_vol',
+});
 
-// argv arrays only — no shell interpolation, nothing secret in argv.
-const COMMANDS = {
-    'create-image': { consent: false, argv: ['truncate', '-s', '150G', IMG] },
-    'associate-loop': { consent: false, argv: ['sudo', 'losetup', '--find', '--show', IMG] },
-    'format-luks': { consent: true, argv: ['sudo', 'cryptsetup', 'luksFormat', LOOP || '<LOOP>'] },
-    'open-mount': { consent: false, argv: ['sudo', 'sh', '-c', `cryptsetup luksOpen ${LOOP || '<LOOP>'} aegis_vol && mkfs.ext4 /dev/mapper/aegis_vol && mkdir -p ${MNT} && mount /dev/mapper/aegis_vol ${MNT} && chown $(id -u):$(id -g) ${MNT}`] },
+const commandsFor = () => {
+    const { img, mnt, mapper } = paths();
+    return {
+        'create-image': { consent: false, argv: ['truncate', '-s', '150G', img] },
+        'associate-loop': { consent: false, argv: ['sudo', 'losetup', '--find', '--show', img] },
+        'format-luks': { consent: true, argv: ['sudo', 'cryptsetup', 'luksFormat', process.env.AEGIS_VOLUME_LOOP || '<LOOP>'] },
+        'open-mount': { consent: false, argv: ['sudo', 'sh', '-c', `cryptsetup luksOpen ${process.env.AEGIS_VOLUME_LOOP || '<LOOP>'} ${mapper} && mkfs.ext4 /dev/mapper/${mapper} && mkdir -p ${mnt} && mount /dev/mapper/${mapper} ${mnt} && chown $(id -u):$(id -g) ${mnt}`] },
+    };
 };
 
+// Cleanup: delete the TEST volume only. Every path must contain 'test' —
+// this can never touch a real volume.
+function cleanupTestVolume({ spawnFn } = {}) {
+    if (!isTest()) return { ok: false, error: 'cleanup refused: not in test-volume mode' };
+    const { img, mnt, mapper } = paths();
+    for (const p of [img, mnt]) {
+        if (!/test/i.test(p)) return { ok: false, error: `cleanup refused: ${p} is not a test path` };
+    }
+    if (!spawnFn) return { ok: false, error: 'no executor' };
+    const argv = ['sudo', 'sh', '-c',
+        `mountpoint -q ${mnt} && umount ${mnt}; [ -e /dev/mapper/${mapper} ] && cryptsetup luksClose ${mapper}; losetup -j ${img} --output NAME --noheadings | xargs -r sudo losetup -d; rm -f ${img}; echo test volume removed`];
+    return { ok: true, spawned: spawnFn(argv, { stdio: 'inherit' }) };
+}
+
 function planStep(id) {
-    const step = COMMANDS[id];
+    const step = commandsFor()[id];
     if (!step) return { ok: false, error: 'unknown step' };
     return { ok: true, id, consentRequired: step.consent, argv: step.argv };
 }
 
-// runStep: caller provides spawnFn(argv, opts) (stdio inherit at the call
-// site) so tests inject a fake and never execute real commands.
 function runStep(id, { consent = false, spawnFn } = {}) {
     const plan = planStep(id);
     if (!plan.ok) return plan;
@@ -34,4 +53,4 @@ function runStep(id, { consent = false, spawnFn } = {}) {
     return { ok: true, id, argv: plan.argv, spawned: spawnFn(plan.argv, { stdio: 'inherit' }) };
 }
 
-module.exports = { planStep, runStep, COMMANDS };
+module.exports = { planStep, runStep, commandsFor, cleanupTestVolume, isTest, paths };
