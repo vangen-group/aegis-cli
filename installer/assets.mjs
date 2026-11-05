@@ -260,7 +260,20 @@ fetch('/api/plan').then(r=>r.json()).then(p=>{
       st.after(cb);
     }
     dot.className='dot '+(v.state==='mounted'?'dot-ok':v.state==='sealed'?'dot-unknown':'dot-missing');
-    st.textContent=t[v.state]||v.state;
+    st.textContent=(t[v.state]||v.state)+(v.img?' ('+v.img+')':'');
+    // T13: test volume exists (sealed/half-provisioned)? offer cleanup.
+    if(v.isTest&&v.state!=='missing'){
+      const cb=document.createElement('button');cb.className='btn btn-ghost btn-verify';
+      cb.style.marginLeft='10px';
+      cb.textContent=LANG==='es'?'Eliminar volumen de prueba':'Delete test volume';
+      cb.onclick=async()=>{cb.disabled=true;
+        await fetch('/api/volume/cleanup',{method:'POST'});
+        st.textContent=LANG==='es'?'volumen de prueba eliminado':'test volume removed';
+        dot.className='dot dot-missing';cb.hidden=true;
+        el('volume-guide').hidden=true;};
+      st.after(cb);
+      if(v.state==='sealed')return; // nothing to provision — it exists
+    }
     if(v.state!=='missing')return;
     if(!(v.provisioning||[]).length)return; // (defensive: list is always sent now)
     el('volume-guide').hidden=false;
