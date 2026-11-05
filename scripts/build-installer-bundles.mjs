@@ -16,7 +16,12 @@ const root = process.cwd();
 const work = join(out, "Aegis CLI Installer");
 rmSync(work, { recursive: true, force: true });
 mkdirSync(join(work, "installer"), { recursive: true });
-cpSync(join(root, "installer"), join(work, "installer"), { recursive: true });
+cpSync(join(root, "installer"), join(work, "installer"), {
+  recursive: true,
+  // telemetry-choice.json is a runtime artifact (written by the server when
+  // a user confirms) — it never belongs in a fresh bundle.
+  filter: (src) => !src.endsWith("telemetry-choice.json"),
+});
 cpSync(join(root, "install.sh"), join(work, "install.sh"));
 writeFileSync(join(work, "Install Aegis CLI.command"), `#!/bin/sh\ncd "$(dirname "$0")" && exec sh installer/bootstrap.sh\n`);
 writeFileSync(join(work, "Install Aegis CLI.cmd"), [
