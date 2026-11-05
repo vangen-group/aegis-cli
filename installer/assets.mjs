@@ -24,16 +24,17 @@ export const HTML = `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <main>
   <nav aria-label="Installation progress">
     <ol id="stepper" class="stages">
-      <li class="stage stage-current" aria-current="step" data-stage="1"><span class="stage-dot" aria-hidden="true">1</span><span class="stage-label">Check</span></li>
-      <li class="stage stage-upcoming" data-stage="2"><span class="stage-dot" aria-hidden="true">2</span><span class="stage-label">Review</span></li>
-      <li class="stage stage-upcoming" data-stage="3"><span class="stage-dot" aria-hidden="true">3</span><span class="stage-label">Install</span></li>
-      <li class="stage stage-upcoming" data-stage="4"><span class="stage-dot" aria-hidden="true">4</span><span class="stage-label">Done</span></li>
+      <li class="stage stage-current" aria-current="step" data-stage="1"><span class="stage-dot" aria-hidden="true">1</span><span class="stage-label" data-i18n="st1">Check</span></li>
+      <li class="stage stage-upcoming" data-stage="2"><span class="stage-dot" aria-hidden="true">2</span><span class="stage-label" data-i18n="st2">Review</span></li>
+      <li class="stage stage-upcoming" data-stage="3"><span class="stage-dot" aria-hidden="true">3</span><span class="stage-label" data-i18n="st3">Volumen</span></li>
+      <li class="stage stage-upcoming" data-stage="4"><span class="stage-dot" aria-hidden="true">4</span><span class="stage-label" data-i18n="st4">Install</span></li>
+      <li class="stage stage-upcoming" data-stage="5"><span class="stage-dot" aria-hidden="true">5</span><span class="stage-label" data-i18n="st5">Listo</span></li>
     </ol>
   </nav>
   <div class="layout">
   <div class="view">
     <section class="panel" id="card-reqs" aria-labelledby="reqs-title">
-      <p class="eyebrow">Step 1 of 4 &middot; Check</p>
+      <p class="eyebrow" data-i18n="eyebrow1">Paso 1 de 5 · Check</p>
       <h1 id="reqs-title" tabindex="-1" data-i18n="reqs-title">Verificando esta computadora</h1>
       <p class="lead" data-i18n="reqs-lead">Primero miramos virtualización, WSL2 y Docker. En Windows todo se instala dentro de tu entorno Ubuntu de WSL2 — nada queda en el host. Nada cambia en esta máquina hasta que confirmes un plan.</p>
       <ul id="prereqs" class="prereqs"><li class="prereq"><span class="dot dot-unknown"></span><span data-i18n="checking">Verificando tu máquina…</span></li></ul>
@@ -41,14 +42,20 @@ export const HTML = `<!doctype html><html lang="en"><head><meta charset="utf-8">
       <div class="panel-actions">
         <button id="to-plan" class="btn btn-primary" disabled data-i18n="review">Ver el plan</button>
       </div>
-      <section class="card-optin" id="volume-card" aria-labelledby="volume-title">
-        <h2 id="volume-title" data-i18n="vol-title">Volumen seguro LUKS</h2>
-        <p class="prereq"><span class="dot dot-unknown" id="volume-dot"></span><span id="volume-state">Consultando el volumen…</span></p>
-        <div id="volume-guide" hidden>
-          <p class="hint" data-i18n="vol-guide-hint">Tu volumen LUKS todavía no existe. Aprovisionalo con estos pasos (en tu terminal — la frase de paso se escribe SOLO en el prompt de cryptsetup) y verificá cada uno:</p>
-          <ol id="volume-steps" class="steps"></ol>
-        </div>
-      </section>
+    </section>
+
+    <section class="panel" id="card-volume" aria-labelledby="volume-title" hidden>
+      <p class="eyebrow" data-i18n="eyebrow3">Paso 3 de 5 · Volumen</p>
+      <h1 id="volume-title" tabindex="-1" data-i18n="volume-h1">Tu volumen seguro LUKS</h1>
+      <p class="lead" data-i18n="volume-lead">Tus secretos y entornos viven cifrados en un volumen LUKS. Si todavía no existe, el wizard lo crea con vos — la frase de paso se escribe SOLO en la consola y nunca atraviesa el wizard.</p>
+      <p class="prereq"><span class="dot dot-unknown" id="volume-dot"></span><span id="volume-state">Consultando el volumen…</span></p>
+      <div id="volume-guide" hidden>
+        <p class="hint" data-i18n="vol-guide-hint">Aprovisionalo con estos pasos — la frase de paso se escribe SOLO en el prompt de cryptsetup:</p>
+        <ol id="volume-steps" class="steps"></ol>
+      </div>
+      <div class="panel-actions">
+        <button id="to-install" class="btn btn-primary">Instalar Aegis CLI</button>
+      </div>
     </section>
 
     <section class="panel" id="card-plan" aria-labelledby="plan-title" hidden>
@@ -123,11 +130,12 @@ function go(stage){
   });
   el('card-reqs').hidden=stage!==1;
   el('card-plan').hidden=stage!==2;
-  el('card-run').hidden=stage!==3;
-  el('card-done').hidden=stage!==4;
+  el('card-volume').hidden=stage!==3;
+  el('card-run').hidden=stage!==4;
+  el('card-done').hidden=stage!==5;
 }
 function startRun(){
-  go(3);
+  go(4);
   el('bar').style.width='8%';el('bar').classList.add('bar-run');
   el('progress-count').textContent='Running install.sh…';
   fetch('/api/confirm',{method:'POST',body:JSON.stringify({telemetry:el('telemetry').checked})});
@@ -173,7 +181,7 @@ function startRun(){
 }
 const I18N = {
   es: {'local':'Instalador local','reqs-title':'Verificando esta computadora','checking':'Verificando tu máquina…','waiting':'Esperando los checks…','review':'Ver el plan','plan-title':'Confirmá el plan','back':'Volver','install':'Instalar Aegis CLI','run-title':'Instalando Aegis CLI','progress':'Progreso','finish':'Terminar','retry':'Volver al plan','done-title':'Aegis CLI está instalado',
-    'eyebrow1':'Paso 1 de 4 · Check','eyebrow2':'Paso 2 de 4 · Revisar','eyebrow3':'Paso 3 de 4 · Instalar','eyebrow4':'Paso 4 de 4 · Listo',
+    'st1':'Check','st2':'Revisar','st3':'Volumen','st4':'Install','st5':'Listo','eyebrow1':'Paso 1 de 5 · Check','eyebrow2':'Paso 2 de 5 · Revisar','eyebrow3':'Paso 3 de 5 · Volumen','eyebrow4':'Paso 4 de 5 · Instalar','eyebrow5':'Paso 5 de 5 · Listo','volume-h1':'Tu volumen seguro LUKS','volume-lead':'Tus secretos y entornos viven cifrados en un volumen LUKS. Si todavía no existe, el wizard lo crea con vos — la frase de paso se escribe SOLO en la consola y nunca atraviesa el wizard.',
     'running':'en progreso','done':'hecho','pending':'pendiente','failed':'falló',
     'step-of':(a,b)=>'Paso '+a+' de '+b},
   en: {'local':'Local installer','reqs-title':'Checking this computer','checking':'Checking your machine…','waiting':'Waiting for checks…','review':'Review the plan','plan-title':'Confirm the plan','back':'Back','install':'Install Aegis CLI','run-title':'Installing Aegis CLI','progress':'Progress','finish':'Finish','retry':'Back to the plan','done-title':'Aegis CLI is installed',
@@ -286,6 +294,7 @@ fetch('/api/plan').then(r=>r.json()).then(p=>{
     : 'Everything is in place. Continue when ready.';
 });
 el('to-plan').onclick=()=>go(2);
+el('to-install').onclick=()=>go(4);
 el('back').onclick=()=>go(1);
 el('confirm').onclick=()=>{el('confirm').disabled=true;startRun();};
 el('retry').onclick=()=>location.reload();
