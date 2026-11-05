@@ -221,8 +221,8 @@ fetch('/api/plan').then(r=>r.json()).then(p=>{
   // T4: LUKS volume state — detected, never toggled. When missing, show the
   // provisioning guide with a read-only verify button per step.
   const LANG=window.__aegisLang;
-  const VOL={es:{missing:'Volumen LUKS inexistente — todavía no está aprovisionado',sealed:'Volumen LUKS sellado (por diseño entre sesiones) — ejecutá ~/mount-aegis.sh cuando lo necesites',mounted:'Volumen LUKS montado en /mnt/aegis_secure',verify:'Verificar',ok:'verificado',fail:'falló',guide:'Tu volumen LUKS todavía no existe. Aprovisionalo con estos pasos (en tu terminal — la frase de paso se escribe SOLO en el prompt de cryptsetup) y verificá cada uno:'},
-             en:{missing:'LUKS volume missing — not provisioned yet',sealed:'LUKS volume sealed (by design between sessions) — run ~/mount-aegis.sh when you need it',mounted:'LUKS volume mounted at /mnt/aegis_secure',verify:'Verify',ok:'verified',fail:'failed',guide:'Your LUKS volume does not exist yet. Provision it with these steps (in your terminal — the passphrase is typed ONLY at the cryptsetup prompt) and verify each one:'}};
+  const VOL={es:{missing:'Volumen LUKS inexistente — todavía no está aprovisionado',sealed:'Volumen LUKS sellado (por diseño entre sesiones) — ejecutá ~/mount-aegis.sh cuando lo necesites',mounted:'Volumen LUKS montado en /mnt/aegis_secure',execute:'Ejecutar paso',verify:'Verificar',ok:'verificado',fail:'falló',guide:'Tu volumen LUKS todavía no existe. Aprovisionalo con estos pasos (en tu terminal — la frase de paso se escribe SOLO en el prompt de cryptsetup) y verificá cada uno:'},
+             en:{missing:'LUKS volume missing — not provisioned yet',sealed:'LUKS volume sealed (by design between sessions) — run ~/mount-aegis.sh when you need it',mounted:'LUKS volume mounted at /mnt/aegis_secure',execute:'Execute step',verify:'Verify',ok:'verified',fail:'failed',guide:'Your LUKS volume does not exist yet. Provision it with these steps (in your terminal — the passphrase is typed ONLY at the cryptsetup prompt) and verify each one:'}};
   fetch('/api/volume/state').then(r=>r.json()).then(v=>{
     const t=VOL[LANG]||VOL.es;
     const dot=el('volume-dot'), st=el('volume-state');
@@ -240,10 +240,28 @@ fetch('/api/plan').then(r=>r.json()).then(p=>{
     for(const p of v.provisioning||[]){
       const li=document.createElement('li');li.className='step';
       const label=document.createElement('span');label.className='step-label';label.textContent=p.text;
-      const btn=document.createElement('button');btn.className='btn btn-ghost btn-verify';btn.textContent=t.verify;
+      const isDev=(v.dev===true);
+      const btn=document.createElement('button');btn.className='btn btn-ghost btn-verify';
+      btn.textContent=isDev?t.verify:(t.execute||'Ejecutar');
       const stat=document.createElement('span');stat.className='step-status';
       btn.onclick=async()=>{
         btn.disabled=true;stat.textContent='…';
+        if(!isDev){
+          // T12: execute FOR the client — cryptsetup/sudo prompt in the
+          // installer console (stdio inherit); the passphrase never crosses
+          // the browser. Ask consent for the destructive step.
+          if(p.id==='format-luks'&&!confirm(LANG==='es'?'⚠️ DESTRUCTIVO: se formateará el volumen con LUKS. Sin la frase de paso los datos son irrecuperables por diseño. ¿Continuar?':'⚠️ DESTRUCTIVE: the volume will be LUKS-formatted. Without the passphrase data is unrecoverable by design. Continue?')){btn.disabled=false;stat.textContent='';return;}
+          const r=await fetch('/api/volume/provision',{method:'POST',body:JSON.stringify({step:p.id,consent:p.id==='format-luks'})}).then(x=>x.json()).catch(()=>({error:'x'}));
+          if(r.started===true){stat.textContent=LANG==='es'?'mirá la consola — confirmá ahí y volvé a verificar':'watch the console — confirm there, then verify';
+            stat.className='step-status state-unknown';
+            const vb=document.createElement('button');vb.className='btn btn-ghost btn-verify';vb.textContent=t.verify;
+            vb.onclick=async()=>{vb.disabled=true;
+              const v2=await fetch('/api/volume/verify',{method:'POST',body:JSON.stringify({step:p.id})}).then(x=>x.json()).catch(()=>({ok:false}));
+              stat.textContent=v2.ok?t.ok:t.fail;stat.className='step-status '+(v2.ok?'state-ok':'state-missing');};
+            li.append(vb);
+          } else {stat.textContent=r.error||t.fail;stat.className='step-status state-missing';btn.disabled=false;}
+          return;
+        }
         const r=await fetch('/api/volume/verify',{method:'POST',body:JSON.stringify({step:p.id})}).then(x=>x.json()).catch(()=>({ok:false}));
         stat.textContent=r.ok?t.ok:t.fail;
         stat.className='step-status '+(r.ok?'state-ok':'state-missing');

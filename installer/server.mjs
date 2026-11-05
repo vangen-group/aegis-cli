@@ -7,6 +7,7 @@ import { randomBytes } from "node:crypto";
 import { HTML, JS, CSS } from "./assets.mjs";
 import { collectPrereqs } from "./prereqs.cjs";
 import { volumeState, verifyStep, PROVISIONING } from "./volume.cjs";
+import { runStep } from "./provision.cjs";
 import { writeFileSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -158,6 +159,21 @@ createServer(async (req, res) => {
       dev: isDev,
       provisioning: isDev ? PROVISIONING.map((p) => ({ id: p.id, text: p[planLang(req.headers.cookie)] || p.en })) : [],
     }), "application/json");
+  }
+  // T12 (S8): run a provisioning step FOR the client. stdio inherit means
+  // cryptsetup/sudo prompt the user DIRECTLY in the installer console — the
+  // passphrase never crosses the browser or this server.
+  if (url.pathname === "/api/volume/provision" && req.method === "POST") {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      let step = "", consent = false;
+      try { const b = JSON.parse(body || "{}"); step = b.step || ""; consent = b.consent === true; } catch {}
+      const r = runStep(step, { consent, spawnFn: (argv, opts) => spawn(argv[0], argv.slice(1), opts) });
+      if (!r.ok) return send(400, r.error || "refused");
+      return send(202, JSON.stringify({ step, started: true }), "application/json");
+    });
+    return;
   }
   if (url.pathname === "/api/volume/verify" && req.method === "POST") {
     let body = "";
