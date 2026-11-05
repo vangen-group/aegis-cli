@@ -79,6 +79,11 @@
   wizard exigía /dev/kvm (checks de Linux nativo) — WSL2 no expone KVM y la
   virtualización ya está demostrada por estar adentro del distro. Fix: en
   windows-wsl virtualización = ok automático, checks reales = Docker + aegis.
+- L6 (2026-11-05): la versión que muestra el wizard es la del launcher de la
+  workstation (aegis --version), no la del release CLI — el label lo aclara y
+  muestra la versión que trae el instalador (VERSION estampado al construir
+  el bundle). El dueño confirmó: KVM innecesario bajo WSL2 — lo que importa
+  es VirtualMachinePlatform (el DISM del hint wsl2).
 - L4 (2026-11-05): el dueño probó el .cmd desde WSL — el .cmd es SOLO para
   double-click en el Explorador de Windows; desde Ubuntu se corre
   `sh installer/bootstrap.sh` directo. Hardening igual incorporado: pausa

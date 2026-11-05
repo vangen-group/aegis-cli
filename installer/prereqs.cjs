@@ -20,11 +20,25 @@ const dockerProbe = (r) => r('docker', ['info']).status === 0;
 
 // T7: an existing aegis install is information, not a blocker. install.sh
 // reinstalls flat into ~/bin, leaving every config/secrets file untouched.
+const SHIPPED_VERSION = (() => {
+    // The version THIS installer ships, stamped at bundle build time
+    // (VERSION travels next to install.sh). In-repo runs read the repo's.
+    try {
+        return fs.readFileSync(require('node:path').join(__dirname, '..', 'VERSION'), 'utf8').trim().split(/\s/)[0];
+    } catch {
+        return '';
+    }
+})();
 const aegisCheck = (r) => {
     const out = r('aegis', ['--version']);
-    return out.status !== 0
-        ? { ok: true, label: 'Aegis CLI not installed yet — a fresh install it is' }
-        : { ok: true, state: 'info', label: `Aegis CLI ${out.stdout.trim().replace(/^aegis\s*/i, '')} is already installed — the installer updates it in place` };
+    if (out.status !== 0) {
+        return { ok: true, label: `Aegis CLI not installed yet — this installer installs ${SHIPPED_VERSION || 'the latest release'}` };
+    }
+    // NOTE: 'aegis --version' reports the WORKSTATION launcher version, not
+    // the CLI release — say so, and name the version this installer ships.
+    const installed = out.stdout.trim().replace(/^aegis\s*/i, '');
+    const ships = SHIPPED_VERSION ? ` — this installer ships CLI ${SHIPPED_VERSION}` : '';
+    return { ok: true, state: 'info', label: `Aegis launcher ${installed} is installed (the launcher version, not the CLI release${ships}) — updating in place, nothing of yours is touched` };
 };
 
 // Returns [{id,label,state:'ok'|'missing'|'unknown'|'info',hint}]. Never throws.

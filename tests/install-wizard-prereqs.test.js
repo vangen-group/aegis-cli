@@ -58,6 +58,8 @@ test('an existing aegis install is reported as non-blocking info with its versio
     assert.ok(aegis, 'the aegis presence check must run on every platform');
     assert.equal(aegis.state, 'info');
     assert.match(aegis.label, /0\.3\.1/);
+    assert.match(aegis.label, /launcher version, not the CLI release/, 'the label must clarify which version the probe reports');
+    assert.match(aegis.label, /ships CLI /, 'the label must name the version this installer ships');
     assert.match(aegis.label, /updates it in place/);
     // Not a blocker: absent aegis on a fresh machine is fine too.
     const fresh = collectPrereqs({ platform: 'darwin', runner: () => ({ status: 1, stdout: '', stderr: '' }) });

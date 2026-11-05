@@ -23,6 +23,7 @@ cpSync(join(root, "installer"), join(work, "installer"), {
   filter: (src) => !src.endsWith("telemetry-choice.json"),
 });
 cpSync(join(root, "install.sh"), join(work, "install.sh"));
+cpSync(join(root, "VERSION"), join(work, "VERSION")); // the version THIS installer ships
 writeFileSync(join(work, "Install Aegis CLI.command"), `#!/bin/sh\ncd "$(dirname "$0")" && exec sh installer/bootstrap.sh\n`);
 writeFileSync(join(work, "Install Aegis CLI.cmd"), [
   "@echo off",
