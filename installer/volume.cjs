@@ -90,4 +90,4 @@ const PROVISIONING = () => {
     ];
     return base.map(([id, es, en]) => ({ id, es, en }));
 };
-module.exports = { volumeState, verifyStep, PROVISIONING };
+module.exports = { volumeState, verifyStep, PROVISIONING, paths };
