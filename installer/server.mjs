@@ -7,7 +7,7 @@ import { randomBytes } from "node:crypto";
 import { HTML, JS, CSS } from "./assets.mjs";
 import { collectPrereqs } from "./prereqs.cjs";
 import { volumeState, verifyStep, PROVISIONING, paths } from "./volume.cjs";
-import { runStep, cleanupTestVolume, isTest } from "./provision.cjs";
+import { runStep, cleanupTestVolume, isTest, provisionAllScript } from "./provision.cjs";
 import { writeFileSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -176,47 +176,21 @@ createServer(async (req, res) => {
   // inherited so cryptsetup/sudo prompt the user DIRECTLY on the console.
   // T14b: ONE sudo session for the whole provisioning — repeated per-step
   // sudo prompts raced with the log piping and broke authentication. The
-  // root script echoes [step] markers, and cryptsetup prompts (YES +
-  // passphrase) are answered DIRECTLY on the inherited TTY.
+  // root script echoes [step] markers; the passphrase dialog runs on the
+  // console TTY (provisionAllScript), never through this server.
   if (url.pathname === "/api/volume/provision-all" && req.method === "POST") {
     let body = "";
     req.on("data", (c) => (body += c));
     req.on("end", () => {
       let consent = false;
       try { consent = JSON.parse(body || "{}").consent === true; } catch {}
-      if (log.includes("provision-all running")) return send(409, "already running");
+      // One run at a time; a FAILED run may be retried (it rolled back).
+      const last = log.slice(log.lastIndexOf("provision-all running"));
+      if (log.includes("provision-all running") && !/provision-all failed/.test(last)) return send(409, "already running");
       send(202, "started");
       const lang = planLang(req.headers.cookie);
-      const { img, mapper, mnt } = paths();
-      const es = lang === "es";
       log += "provision-all running\n";
-      const script = [
-        "set -eu",
-        `IMG='${img}'`, `MAPPER='${mapper}'`, `MNT='${mnt}'`,
-        es ? "echo '--- PASO 1/4: crear la imagen (sin password)...'" : "echo '--- STEP 1/4: create the image (no password)...'",
-        `echo '[step] started create-image'`,
-        `truncate -s ${isTest() ? "64M" : "150G"} "$IMG"`,
-        `echo '[step] finished create-image'`,
-        es ? "echo '--- PASO 2/4: asociar el loop (te puede pedir tu password de sudo)'" : "echo '--- STEP 2/4: associate the loop (sudo password may be asked)'",
-        `echo '[step] started associate-loop'`,
-        `LOOP=$(losetup --find --show "$IMG" | cut -d: -f1)`,
-        `echo "[step] finished associate-loop"`,
-        `echo "LOOP=$LOOP"`,
-        consent ? "true" : "exit 3",
-        es ? "echo '--- PASO 3/4: formatear LUKS — LA CONSOLA TE VA A PEDIR: YES y tu frase de paso'" : "echo '--- STEP 3/4: format LUKS — THE CONSOLE WILL ASK: YES and your passphrase'",
-        `echo '[step] started format-luks'`,
-        `cryptsetup luksFormat "$LOOP"`,
-        `echo '[step] finished format-luks'`,
-        es ? "echo '--- PASO 4/4: abrir y montar — la consola pide tu frase de paso (dos veces)'" : "echo '--- STEP 4/4: open and mount — the console asks your passphrase (twice)'",
-        `echo '[step] started open-mount'`,
-        `cryptsetup luksOpen "$LOOP" "$MAPPER"`,
-        `mkfs.ext4 /dev/mapper/"$MAPPER"`,
-        `mkdir -p "$MNT"`,
-        `mount /dev/mapper/"$MAPPER" "$MNT"`,
-        `chown 1000:1000 "$MNT" 2>/dev/null || true`,
-        `echo '[step] finished open-mount'`,
-        es ? "echo '--- LISTO: el volumen está montado. Volvé al wizard y continuá.'" : "echo '--- DONE: volume mounted. Back to the wizard to continue.'",
-      ].join("\n");
+      const script = provisionAllScript({ consent, lang });
       const child = spawn("sudo", ["sh", "-c", script], { stdio: ["inherit", "pipe", "pipe"] });
       child.stdout?.on("data", (d) => (log += d));
       child.stderr?.on("data", (d) => (log += d));
@@ -236,27 +210,32 @@ createServer(async (req, res) => {
       ["open-mount", { es: "Abrir, formatear y montar", en: "Open, format and mount" }],
     ];
     const lang = planLang(req.headers.cookie);
-    const finishedIds = [...log.matchAll(/\[step\] (?:finished|skipped) ([a-z-]+)/g)].map((m) => m[1]);
-    const startedIds = [...log.matchAll(/\[step\] started ([a-z-]+)/g)].map((m) => m[1]);
-    // UX: while a step waits on the console, TELL the user what to type.
-    const CONSOLE_PROMPTS = {
-      "format-luks": {
-        es: "MIRÁ LA CONSOLA: escribí YES (mayúsculas) y después tu frase de paso — A CIEGAS (no se muestra mientras escribís), Enter, y repetila",
-        en: "WATCH THE CONSOLE: type YES (capital letters), then your passphrase — BLIND (nothing shows as you type), Enter, and repeat it",
-      },
-      "open-mount": {
-        es: "MIRÁ LA CONSOLA: escribí tu frase de paso dos veces — A CIEGAS (no se muestra mientras escribís)",
-        en: "WATCH THE CONSOLE: type your passphrase twice — BLIND (nothing shows as you type)",
-      },
+    // Only the latest run counts (a retried run starts a fresh marker trail).
+    const run = log.slice(Math.max(0, log.lastIndexOf("provision-all running")));
+    const finishedIds = [...run.matchAll(/\[step\] (?:finished|skipped) ([a-z-]+)/g)].map((m) => m[1]);
+    const startedIds = [...run.matchAll(/\[step\] started ([a-z-]+)/g)].map((m) => m[1]);
+    // UX: the banner shows ONLY while the console is really waiting for the
+    // user ([await] passphrase … [await] done), not for the whole step.
+    const failedRun = /provision-all failed/.test(run);
+    const awaiting = !failedRun && run.lastIndexOf("[await] passphrase") > run.lastIndexOf("[await] done");
+    const consolePrompt = awaiting ? {
+      es: "Tu consola te está esperando: escribí tu frase de paso y repetila. No se ve al escribir — es normal.",
+      en: "Your console is waiting: type your passphrase and repeat it. Nothing shows as you type — that is expected.",
+    }[lang] || null : null;
+    const reason = (run.match(/\[fail\] ([a-z-]+)/g) || []).pop()?.slice(7);
+    const FAIL_TEXT = {
+      passphrase: { es: "Las frases no coincidieron o eran muy cortas. Tocá Reintentar.", en: "The passphrases did not match or were too short. Press Retry." },
+      consent: { es: "Falta tu consentimiento para formatear.", en: "Formatting consent is missing." },
+      exists: { es: "Ya existe una imagen del volumen: no se tocó. Recargá la página para ver sus opciones.", en: "A volume image already exists: it was left untouched. Reload the page to see its options." },
+      loop: { es: "No se pudo asociar el dispositivo loop. No se formateó nada; tocá Reintentar.", en: "Could not associate the loop device. Nothing was formatted; press Retry." },
     };
+    const error = failedRun ? (FAIL_TEXT[reason]?.[lang] || (lang === "es" ? "Falló un paso — el detalle está en la consola." : "A step failed — details are in the console.")) : null;
     const steps = VSTEPS.map(([id, l]) => ({
       id, label: l[lang] || l.en,
-      status: finishedIds.includes(id) ? "done" : startedIds.includes(id) ? "running" : "pending",
+      status: finishedIds.includes(id) ? "done" : startedIds.includes(id) ? (failedRun ? "failed" : "running") : "pending",
     }));
-    const running = steps.find((x) => x.status === "running");
-    const consolePrompt = running ? CONSOLE_PROMPTS[running.id]?.[lang] : null;
     const done = steps.filter((x) => x.status === "done").length;
-    return send(200, JSON.stringify({ steps, done, total: steps.length, running: log.includes("provision-all running") && !log.includes("provision-all done"), consolePrompt }), "application/json");
+    return send(200, JSON.stringify({ steps, done, total: steps.length, running: run.startsWith("provision-all running") && !run.includes("provision-all done") && !failedRun, consolePrompt, error }), "application/json");
   }
   // T12 (S8): run a provisioning step FOR the client. stdio inherit means
   // cryptsetup/sudo prompt the user DIRECTLY in the installer console — the

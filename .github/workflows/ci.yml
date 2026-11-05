@@ -17,6 +17,11 @@ jobs:
       - name: Run update UX tests
         run: bash tests/update-uiux.test.sh
 
+      # Installer wizard suites (node:test). The provisioning dialog tests run
+      # on a real pseudo-terminal via util-linux `script` (preinstalled).
+      - name: Run installer tests
+        run: node --test tests/*.test.js
+
       - name: Build the release tarball (no signing, just structure)
         run: bash scripts/build-release-tarball.sh dist/aegis-cli.tar.gz
 
