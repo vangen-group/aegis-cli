@@ -142,3 +142,31 @@ test('bootstrap.sh refuses a bundle with a missing or symlinked file', () => {
         rmrf(dir);
     }
 });
+
+test('the plan is platform-specific: windows-wsl names the Ubuntu containment (T9)', async () => {
+    const dir = tempDir('aegis-wizard-platform-');
+    const stubInstall = path.join(dir, 'install.sh');
+    fs.writeFileSync(stubInstall, '#!/bin/sh\necho INSTALLED-OK\n', { mode: 0o755 });
+    const port = 19464 + Math.floor(Math.random() * 500);
+    const child = require('node:child_process').spawn(process.execPath, [path.join(REPO_ROOT, 'installer', 'server.mjs'), '--port', String(port)], {
+        cwd: REPO_ROOT,
+        env: { ...process.env, AEGIS_INSTALLER_INSTALL_SH: stubInstall, AEGIS_INSTALLER_PLATFORM: 'windows-wsl' },
+        stdio: 'ignore',
+    });
+    try {
+        let ready = false;
+        for (let i = 0; i < 50 && !ready; i++) {
+            await new Promise((r) => setTimeout(r, 50));
+            ready = spawnSync('curl', ['-s', '-o', '/dev/null', `http://127.0.0.1:${port}/`], { encoding: 'utf8' }).status === 0;
+        }
+        assert.ok(ready, 'the server must come up');
+        const plan = JSON.parse(spawnSync('curl', ['-s', '-o', '/dev/null', '-w', '%{http_code}', '-c', dir + '/c.jar', `http://127.0.0.1:${port}/`], { encoding: 'utf8' }).stdout.trim() === '200'
+            ? spawnSync('curl', ['-s', '-b', dir + '/c.jar', `http://127.0.0.1:${port}/api/plan`], { encoding: 'utf8' }).stdout
+            : '{}');
+        assert.equal(plan.platform, 'windows-wsl');
+        assert.ok(plan.sections.some((s) => /WSL2 Ubuntu/.test(s.detail)), 'the plan must state the Ubuntu containment');
+        assert.ok(plan.sections.every((s) => !/on your Linux machine/.test(s.detail)), 'the native-Linux wording must not leak into the WSL plan');
+    } finally {
+        child.kill('SIGTERM');
+    }
+});

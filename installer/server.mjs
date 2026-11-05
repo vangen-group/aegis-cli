@@ -6,7 +6,7 @@ import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { HTML, JS, CSS } from "./assets.mjs";
 import { collectPrereqs } from "./prereqs.cjs";
-import { writeFileSync } from "node:fs";
+import { writeFileSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -25,39 +25,77 @@ const headers = {
   "Cache-Control": "no-store",
   "Referrer-Policy": "no-referrer",
 };
-const plan = () => ({
-  // Structured sections: each names WHAT happens and why it needs what.
-  // The CLI itself needs nothing but network — Docker/virtualization are
-  // requirements of the workstation image, pulled by the NEXT journey.
-  sections: [
-    {
-      title: "Download the signed release",
-      needs: "internet only",
-      detail: "Fetch the latest aegis-cli release tarball from GitHub (vangen-group/aegis-cli).",
-    },
-    {
-      title: "Verify every signature",
-      needs: "cosign v3.1.3 (pinned, downloaded by install.sh)",
-      detail: "Nothing is extracted or written if a signature check fails. Fails closed.",
-    },
-    {
-      title: "Install the CLI into ~/bin",
-      needs: "write access to ~/bin",
-      detail: "Copies the aegis launcher into ~/bin — inside your WSL2 Ubuntu environment on Windows, nothing is written to the host.",
-    },
-    {
-      title: "Then: bring up the workstation",
-      needs: "Docker + virtualization — that is what the checks above verify",
-      detail: "The CLI alone is ready after step 3. When you run 'aegis install <license-id>' it downloads and runs the signed workstation image — that is where Docker and virtualization are used. Everything lives inside the WSL2 Ubuntu environment on Windows; the host only had the zip.",
-    },
-  ],
-  steps: [
-    `bash ${installSh}   # download the latest signed aegis-cli release,`,
-    "                   # verify it with cosign, then install into ~/bin",
-  ],
-  prereqs: collectPrereqs(),
-  next: "after installing, run: aegis install <license-id>",
+// T9: the plan is platform-specific. On Windows the .cmd relaunches inside
+// WSL2, so a "linux" process there is really the WSL2 Ubuntu environment
+// (detected via /proc/version) — its plan differs from a native Linux one.
+// AEGIS_INSTALLER_PLATFORM overrides detection for tests and demos.
+function detectPlatform() {
+  if (process.env.AEGIS_INSTALLER_PLATFORM) return process.env.AEGIS_INSTALLER_PLATFORM;
+  if (process.platform !== "linux") return process.platform;
+  try {
+    if (/microsoft/i.test(readFileSync("/proc/version", "utf8"))) return "windows-wsl";
+  } catch {}
+  return "linux";
+}
+const COMMON = [
+  {
+    title: "Download the signed release",
+    needs: "internet only",
+    detail: "Fetch the latest aegis-cli release tarball from GitHub (vangen-group/aegis-cli).",
+  },
+  {
+    title: "Verify every signature",
+    needs: "cosign v3.1.3 (pinned, downloaded by install.sh)",
+    detail: "Nothing is extracted or written if a signature check fails. Fails closed.",
+  },
+];
+const INSTALL_STEP = (where) => ({
+  title: "Install the CLI into ~/bin",
+  needs: "write access to ~/bin",
+  detail: `Copies the aegis launcher into ~/bin ${where}. If a previous install exists it updates in place — environments, secrets and license are untouched.`,
 });
+const WORKSTATION_STEP = (where) => ({
+  title: "Then: bring up the workstation",
+  needs: "Docker + virtualization — that is what the checks above verify",
+  detail: `The CLI alone is ready after step 3. When you run 'aegis install <license-id>' it downloads and runs the signed workstation image — that is where Docker and virtualization are used. ${where}`,
+});
+const PLANS = {
+  "windows-wsl": {
+    sections: [...COMMON,
+      INSTALL_STEP("inside this WSL2 Ubuntu environment — nothing is written to the Windows host, the host only had the zip"),
+      WORKSTATION_STEP("Everything lives inside the WSL2 Ubuntu distro; removing it removes all of Aegis."),
+    ],
+    prereqsPlatform: "linux",
+  },
+  darwin: {
+    sections: [...COMMON,
+      INSTALL_STEP("(~/bin on macOS)"),
+      WORKSTATION_STEP("The workstation runs as containers in Docker Desktop on your Mac."),
+    ],
+    prereqsPlatform: "darwin",
+  },
+  linux: {
+    sections: [...COMMON,
+      INSTALL_STEP("on your Linux machine"),
+      WORKSTATION_STEP("The workstation runs as containers in your Docker Engine."),
+    ],
+    prereqsPlatform: "linux",
+  },
+};
+const PLATFORM = detectPlatform();
+const plan = () => {
+  const p = PLANS[PLATFORM] || PLANS.linux;
+  return {
+    platform: PLATFORM,
+    sections: p.sections,
+    steps: [
+      `bash ${installSh}   # download the latest signed aegis-cli release,`,
+      "                   # verify it with cosign, then install into ~/bin",
+    ],
+    prereqs: collectPrereqs({ platform: p.prereqsPlatform }),
+    next: "after installing, run: aegis install <license-id>",
+  };
+};
 // T3: the telemetry opt-in chosen on the last screen is persisted next to
 // the server so the release tooling can read it. Default is off.
 const bundleDir = dirname(fileURLToPath(import.meta.url)) + "/";
