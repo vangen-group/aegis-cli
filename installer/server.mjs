@@ -129,21 +129,24 @@ createServer(async (req, res) => {
   if (url.pathname === "/api/plan") return send(200, JSON.stringify(plan()), "application/json");
   if (url.pathname === "/api/log") return send(200, log);
   if (url.pathname === "/api/progress") {
-    // Step model derived from the install.sh log (gentle-shell's pattern:
-    // the runner names each step; the first unlogged step is running).
-    const seen = (re) => re.test(log);
-    const step = (id, label, doneRe, startedRe) => ({
-      id, label,
-      status: seen(doneRe) ? "done" : seen(startedRe) ? "running" : "pending",
-    });
-    const finished = /INSTALL-FINISHED rc=(\d+)/.exec(log);
-    const steps = [
-      step("cosign", "Get cosign v3.1.3 (checksum-verified)", /installed v[\d.]+ to|verifying signature/, /downloading cosign/),
-      step("download", "Download the signed aegis-cli release", /verifying signature/, /installing v[\d.]+|downloading/),
-      step("verify", "Verify every signature", /signature verified/, /verifying signature/),
-      step("install", "Install the CLI into ~/bin", /installed v[\d.]+ to/, /installing v[\d.]+/),
+    // T10: install.sh logs an explicit [step] started/finished protocol; the
+    // first started-but-not-finished step is running (gentle-shell's rule).
+    const STEPS = [
+      ["resolve-platform", "Resolve platform"],
+      ["acquire-cosign", "Get cosign v3.1.3 (checksum-verified)"],
+      ["resolve-release", "Resolve the release"],
+      ["download", "Download the signed aegis-cli release"],
+      ["verify", "Verify every signature"],
+      ["extract-install", "Install the CLI into ~/bin"],
     ];
+    const finishedIds = [...log.matchAll(/\[step\] finished ([a-z-]+)/g)].map((m) => m[1]);
+    const startedIds = [...log.matchAll(/\[step\] started ([a-z-]+)/g)].map((m) => m[1]);
+    const steps = STEPS.map(([id, label]) => ({
+      id, label,
+      status: finishedIds.includes(id) ? "done" : startedIds.includes(id) ? "running" : "pending",
+    }));
     const done = steps.filter((x) => x.status === "done").length;
+    const finished = /INSTALL-FINISHED rc=(\d+)/.exec(log);
     return send(200, JSON.stringify({
       steps, done, total: steps.length,
       finished: Boolean(finished),

@@ -44,6 +44,10 @@
   apunta a Docker Desktop + backend WSL2. La cadena completa WSL2 -> Docker
   Desktop -> imagen de la workstation queda: WSL2/virtualización/docker en
   este wizard; el estado del volumen LUKS sigue siendo T4 (fase workstation).
+- T10 HECHO (feat/modular-install): install.sh refactorizado a 6 funciones
+  step_* con protocolo "[step] started/finished <id>" (sigue siendo
+  autocontenido para curl|bash); /api/progress del wizard parsea el protocolo
+  real; AEGIS_INSTALL_STEPS_ONLY=1 ejecuta los pasos sin red para tests.
 - T5 Release workflow que publique los zips en GitHub Releases + redirect en
   vangengroup.com.
 
