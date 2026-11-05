@@ -153,13 +153,44 @@ step_extract_install() {
     log "[step] finished extract-install"
 }
 
+# S7 (resume): each finished step is recorded in a journal so a re-run
+# continues where a stuck run stopped. The journal is invalid when the tag
+# changes (each step is only idempotent for the SAME release).
+JOURNAL="${AEGIS_CLI_JOURNAL:-${XDG_STATE_HOME:-$HOME/.local/state}/aegis-cli/install-state}"
+journal_tag() { [[ -f "${JOURNAL}.tag" ]] && cat "${JOURNAL}.tag" || true; }
+journal_done() { grep -qx "done $1" "${JOURNAL}" 2>/dev/null; }
+journal_mark() {
+    mkdir -p "$(dirname "$JOURNAL")"
+    touch "$JOURNAL"
+    grep -qx "done $1" "$JOURNAL" || echo "done $1" >> "$JOURNAL"
+}
+run_step() {
+    local id="$1" fn
+    fn="step_${id//-/_}"
+    if journal_done "$id"; then
+        log "[step] skipped ${id} (already finished — resuming)"
+        return 0
+    fi
+    "$fn"
+    journal_mark "$id"
+}
+
 main() {
+    # resolve-platform and resolve-release are quick and deterministic: they
+    # always run, and their result decides whether the journal is still valid
+    # (a tag change resets it — steps are only idempotent for the SAME release).
     step_resolve_platform
-    step_acquire_cosign
     step_resolve_release
-    step_download
-    step_verify
-    step_extract_install
+    if [[ "$(journal_tag)" != "$tag" ]]; then
+        log "install journal: target ${tag} — starting fresh"
+        mkdir -p "$(dirname "$JOURNAL")"
+        echo "$tag" > "${JOURNAL}.tag"
+        : > "$JOURNAL"
+    fi
+    run_step acquire-cosign
+    run_step download
+    run_step verify
+    run_step extract-install
 }
 
 if [[ "${AEGIS_INSTALL_STEPS_ONLY:-}" == "1" ]]; then
