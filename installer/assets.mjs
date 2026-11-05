@@ -294,9 +294,9 @@ fetch('/api/plan').then(r=>r.json()).then(p=>{
     : 'Everything is in place. Continue when ready.';
 });
 el('to-plan').onclick=()=>go(2);
-el('to-install').onclick=()=>go(4);
+el('to-install').onclick=()=>{el('to-install').disabled=true;startRun();};
 el('back').onclick=()=>go(1);
-el('confirm').onclick=()=>{el('confirm').disabled=true;startRun();};
+el('confirm').onclick=()=>{el('confirm').disabled=true;go(3);};
 el('retry').onclick=()=>location.reload();
 el('done').onclick=()=>go(4);
 el('finish').onclick=()=>window.close();
