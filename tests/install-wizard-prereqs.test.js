@@ -52,6 +52,7 @@ test('on Linux virtualization is /dev/kvm plus docker; on macOS only docker (T6)
 test('an existing aegis install is reported as non-blocking info with its version (T7)', () => {
     const prereqs = collectPrereqs({
         platform: 'darwin',
+        lang: 'en',
         runner: (cmd, args) => (cmd === 'aegis' ? { status: 0, stdout: 'aegis 0.3.1\n', stderr: '' } : { status: 1, stdout: '', stderr: '' }),
     });
     const aegis = prereqs.find((p) => p.id === 'aegis');
@@ -62,7 +63,7 @@ test('an existing aegis install is reported as non-blocking info with its versio
     assert.match(aegis.label, /ships CLI /, 'the label must name the version this installer ships');
     assert.match(aegis.label, /updating in place/);
     // Not a blocker: absent aegis on a fresh machine is fine too.
-    const fresh = collectPrereqs({ platform: 'darwin', runner: () => ({ status: 1, stdout: '', stderr: '' }) });
+    const fresh = collectPrereqs({ platform: 'darwin', lang: 'en', runner: () => ({ status: 1, stdout: '', stderr: '' }) });
     assert.equal(fresh.find((p) => p.id === 'aegis').state, 'ok');
     assert.match(fresh.find((p) => p.id === 'aegis').label, /not installed yet/);
 });
@@ -74,11 +75,20 @@ test('the default runner works without arguments on the current platform', () =>
 });
 
 test('under windows-wsl virtualization is auto-ok (we ARE inside WSL2) and /dev/kvm is not demanded (L5)', () => {
-    const prereqs = collectPrereqs({ platform: 'windows-wsl', runner: (cmd) => (cmd === 'docker' ? { status: 0, stdout: 'ok', stderr: '' } : { status: 1, stdout: '', stderr: '' }) });
+    const prereqs = collectPrereqs({ platform: 'windows-wsl', lang: 'en', runner: (cmd) => (cmd === 'docker' ? { status: 0, stdout: 'ok', stderr: '' } : { status: 1, stdout: '', stderr: '' }) });
     assert.deepEqual(prereqs.map((p) => [p.id, p.state]), [['virtualization', 'ok'], ['docker', 'ok'], ['aegis', 'ok']]);
     assert.match(prereqs[0].label, /inside WSL2/);
     assert.ok(prereqs.every((p) => p.id !== 'kvm') && !JSON.stringify(prereqs).includes('/dev/kvm'), 'no KVM check under WSL2');
     // Without docker it still blocks (the real requirement).
     const noDocker = collectPrereqs({ platform: 'windows-wsl', runner: () => ({ status: 1, stdout: '', stderr: '' }) });
     assert.deepEqual(noDocker.map((p) => [p.id, p.state]), [['virtualization', 'ok'], ['docker', 'missing'], ['aegis', 'ok']]);
+});
+
+test('Spanish is the default language (owner decision): hints and aegis row come in Spanish', () => {
+    const prereqs = collectPrereqs({ platform: 'windows-wsl', runner: (cmd) => (cmd === 'docker' ? { status: 0, stdout: 'ok', stderr: '' } : { status: 1, stdout: '', stderr: '' }) });
+    assert.match(prereqs[0].label, /dentro de WSL2|estás corriendo dentro/i);
+    const aegis = prereqs.find((p) => p.id === 'aegis');
+    assert.match(aegis.label, /todavía no está instalado/);
+    const fresh = collectPrereqs({ platform: 'darwin', runner: () => ({ status: 1, stdout: '', stderr: '' }) });
+    assert.match(fresh.find((p) => p.id === 'aegis').label, /todavía no está instalado/);
 });

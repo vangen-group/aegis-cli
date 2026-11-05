@@ -139,7 +139,9 @@ createServer(async (req, res) => {
       ["verify", "Verify every signature"],
       ["extract-install", "Install the CLI into ~/bin"],
     ];
-    const finishedIds = [...log.matchAll(/\[step\] finished ([a-z-]+)/g)].map((m) => m[1]);
+    // S7: a resumed run logs 'skipped <id>' for steps the journal already
+    // finished — those count as done too.
+    const finishedIds = [...log.matchAll(/\[step\] (?:finished|skipped) ([a-z-]+)/g)].map((m) => m[1]);
     const startedIds = [...log.matchAll(/\[step\] started ([a-z-]+)/g)].map((m) => m[1]);
     const steps = STEPS.map(([id, label]) => ({
       id, label,

@@ -23,11 +23,14 @@ test('install.sh defines the step protocol and runs the network-free steps under
 
 test('the step protocol covers all six install steps in order', () => {
     const src = require('node:fs').readFileSync(path.join(REPO_ROOT, 'install.sh'), 'utf8');
+    // All six steps define the marker protocol...
+    const calls = [...src.matchAll(/log "\[step\] started ([a-z-]+)"/g)].map((m) => m[1]);
+    // ...and main() journals the four non-trivial ones (S7 resume).
     const start = src.indexOf('main() {');
-    const main = src.slice(start, src.indexOf('\n}', start));
-    const calls = main.split('\n')
-        .filter((line) => line.startsWith('    step_'))
-        .map((line) => line.trim().replace('step_', '').replace(/_/g, '-'));
+    const mainBody = src.slice(start, src.indexOf('\n}', start));
+    for (const id of ['acquire-cosign', 'download', 'verify', 'extract-install']) {
+        assert.ok(mainBody.includes(`run_step ${id}`), `main must journal ${id}`);
+    }
     assert.deepEqual(calls, ['resolve-platform', 'acquire-cosign', 'resolve-release', 'download', 'verify', 'extract-install']);
     for (const id of calls) {
         assert.ok(src.includes(`[step] started ${id}`), `missing started marker for ${id}`);
