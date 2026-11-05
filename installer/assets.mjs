@@ -229,6 +229,11 @@ fetch('/api/plan').then(r=>r.json()).then(p=>{
     dot.className='dot '+(v.state==='mounted'?'dot-ok':v.state==='sealed'?'dot-unknown':'dot-missing');
     st.textContent=t[v.state]||v.state;
     if(v.state!=='missing')return;
+    if(!(v.provisioning||[]).length){
+      // Client build: creation steps never ship — point to the runbook/support.
+      st.textContent+=(LANG==='es'?' — el aprovisionamiento lo realiza el equipo de Vangen; contactá soporte.':'. — provisioning is performed by the Vangen team; contact support.');
+      return;
+    }
     el('volume-guide').hidden=false;
     el('volume-guide').querySelector('[data-i18n=vol-guide-hint]').textContent=t.guide;
     const box=el('volume-steps');box.innerHTML='';
