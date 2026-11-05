@@ -76,6 +76,15 @@ jobs:
             --certificate-identity-regexp "^https://github.com/${GITHUB_REPOSITORY}/" \
             dist/aegis-cli.tar.gz
 
+      # T5: build the double-click wizard bundles and publish them as
+      # release assets. VERSION is stamped from the tag (release-please may
+      # lag) so the wizard reports the version it really ships.
+      - name: Build the installer wizard bundles
+        run: |
+          set -eu
+          echo "${{ steps.version.outputs.version }}" > VERSION
+          node scripts/build-installer-bundles.mjs --out dist
+
       - name: Create the GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -87,12 +96,16 @@ jobs:
               dist/aegis-cli.tar.gz \
               dist/aegis-cli.tar.gz.sha256 \
               dist/aegis-cli.tar.gz.cosign.bundle \
+              dist/aegis-installer-macos.zip \
+              dist/aegis-installer-windows.zip \
               --clobber
           else
             gh release create "$tag" \
               dist/aegis-cli.tar.gz \
               dist/aegis-cli.tar.gz.sha256 \
               dist/aegis-cli.tar.gz.cosign.bundle \
+              dist/aegis-installer-macos.zip \
+              dist/aegis-installer-windows.zip \
               --title "aegis-cli ${tag}" \
               --generate-notes
           fi
