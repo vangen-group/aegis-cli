@@ -52,7 +52,10 @@ const aegisCheck = (r, lang = 'es') => {
     // the CLI release — say so, and name the version this installer ships.
     const installed = out.stdout.trim().replace(/^aegis\s*/i, '');
     const ships = SHIPPED_VERSION ? ` — this installer ships CLI ${SHIPPED_VERSION}` : '';
-    return { ok: true, state: 'info', label: `Aegis launcher ${installed} is installed (the launcher version, not the CLI release${ships}) — updating in place, nothing of yours is touched` };
+    if (lang === 'es') {
+        return { ok: true, state: 'info', label: `Aegis launcher ${installed} instalado — este instalador trae CLI ${SHIPPED_VERSION || 'la última release'} y actualiza en el lugar; nada tuyo se toca` };
+    }
+    return { ok: true, state: 'info', label: `Aegis launcher ${installed} installed — this installer ships CLI ${SHIPPED_VERSION || 'the latest release'} and updates in place; nothing of yours is touched` };
 };
 
 // Returns [{id,label,state:'ok'|'missing'|'unknown'|'info',hint}]. Never throws.
@@ -60,9 +63,9 @@ function collectPrereqs({ platform = process.platform, runner, lang = 'es', demo
     const hintOf = (id) => (HINTS[id] && (HINTS[id][lang] || HINTS[id].en)) || '';
     if (demo) {
         return [
-            { id: 'virtualization', label: 'Virtualization enabled in firmware', state: 'ok', hint: HINTS.virtualization[lang] || HINTS.virtualization.en },
+            { id: 'virtualization', label: { es: 'Virtualización activa en el firmware', en: 'Virtualization enabled in firmware' }, state: 'ok', hint: HINTS.virtualization[lang] || HINTS.virtualization.en },
             { id: 'wsl2', label: 'WSL2 installed', state: 'ok', hint: HINTS.wsl2[lang] || HINTS.wsl2.en },
-            { id: 'docker', label: 'Docker Desktop running', state: 'ok', hint: HINTS.docker[lang] || HINTS.docker.en },
+            { id: 'docker', label: { es: 'Docker Desktop corriendo', en: 'Docker Desktop running' }, state: 'ok', hint: HINTS.docker[lang] || HINTS.docker.en },
             { id: 'aegis', label: 'Aegis CLI 0.0.0-demo is already installed — the installer updates it in place', state: 'info', hint: HINTS.aegis },
         ];
     }
@@ -74,6 +77,7 @@ function collectPrereqs({ platform = process.platform, runner, lang = 'es', demo
         }
     });
     const check = (id, label, probe, hint) => {
+        const lab = label && typeof label === 'object' ? (label[lang] || label.en) : label;
         let state = 'unknown';
         let resolvedLabel = label;
         try {
@@ -83,7 +87,7 @@ function collectPrereqs({ platform = process.platform, runner, lang = 'es', demo
         } catch {
             state = 'unknown';
         }
-        return { id, label: resolvedLabel, state, hint: hintOf(id) || hint };
+        return { id, label: lab || resolvedLabel, state, hint: hintOf(id) || hint };
     };
     if (platform === 'windows-wsl') {
         // The .cmd relaunched us inside the WSL2 Ubuntu distro: virtualization
@@ -106,25 +110,25 @@ function collectPrereqs({ platform = process.platform, runner, lang = 'es', demo
     }
     if (platform === 'darwin') {
         // macOS needs no virtualization/WSL check — Docker Desktop only.
-        return [check('docker', 'Docker Desktop running', dockerProbe), check('aegis', '', (r) => aegisCheck(r, lang), hintOf('aegis'))];
+        return [check('docker', { es: 'Docker Desktop corriendo', en: 'Docker Desktop running' }, dockerProbe), check('aegis', '', (r) => aegisCheck(r, lang), hintOf('aegis'))];
     }
     if (platform === 'win32') {
         return [
-            check('virtualization', 'Virtualization enabled in firmware', (r) =>
+            check('virtualization', { es: 'Virtualización activa en el firmware', en: 'Virtualization enabled in firmware' }, (r) =>
                 /VirtualizationEnabledInFirmware\s*:\s*True/i.test(
                     r('powershell.exe', ['-NoProfile', '-Command', '(Get-ComputerInfo).HyperVRequirementVirtualizationFirmwareEnabled']).stdout
                 )
             ),
-            check('wsl2', 'WSL2 installed', (r) => r('wsl.exe', ['--status']).status === 0),
-            check('docker', 'Docker Desktop running', dockerProbe),
+            check('wsl2', { es: 'WSL2 instalado', en: 'WSL2 installed' }, (r) => r('wsl.exe', ['--status']).status === 0),
+            check('docker', { es: 'Docker Desktop corriendo', en: 'Docker Desktop running' }, dockerProbe),
             check('aegis', '', (r) => aegisCheck(r, lang), hintOf('aegis')),
         ];
     }
     // Linux: the workstation later needs KVM for the sandbox, and Docker
     // Engine (not Docker Desktop — that product does not exist here).
     return [
-        check('virtualization', 'KVM available', (r) => fs.existsSync('/dev/kvm') && r('test', ['-w', '/dev/kvm']).status === 0),
-        check('docker', 'Docker engine running', dockerProbe, HINTS.dockerLinux),
+        check('virtualization', { es: 'KVM disponible', en: 'KVM available' }, (r) => fs.existsSync('/dev/kvm') && r('test', ['-w', '/dev/kvm']).status === 0),
+        check('docker', { es: 'Docker Engine corriendo', en: 'Docker Engine running' }, dockerProbe, HINTS.dockerLinux),
         check('aegis', '', (r) => aegisCheck(r, lang), hintOf('aegis')),
     ];
 }
