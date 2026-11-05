@@ -174,35 +174,56 @@ createServer(async (req, res) => {
   // T14: provision ALL steps sequentially, install-style: one POST, markers
   // logged per step (the volume progress endpoint parses them), stdin
   // inherited so cryptsetup/sudo prompt the user DIRECTLY on the console.
+  // T14b: ONE sudo session for the whole provisioning — repeated per-step
+  // sudo prompts raced with the log piping and broke authentication. The
+  // root script echoes [step] markers, and cryptsetup prompts (YES +
+  // passphrase) are answered DIRECTLY on the inherited TTY.
   if (url.pathname === "/api/volume/provision-all" && req.method === "POST") {
     let body = "";
     req.on("data", (c) => (body += c));
-    req.on("end", async () => {
+    req.on("end", () => {
       let consent = false;
       try { consent = JSON.parse(body || "{}").consent === true; } catch {}
       if (log.includes("provision-all running")) return send(409, "already running");
-      log += "provision-all running\n";
       send(202, "started");
+      const lang = planLang(req.headers.cookie);
       const { img, mapper, mnt } = paths();
-      const steps = [
-        ["create-image", ["truncate", "-s", isTest() ? "64M" : "150G", img], false],
-        ["associate-loop", ["sudo", "losetup", "--find", "--show", img], false],
-        ["format-luks", ["sudo", "cryptsetup", "luksFormat", "<LOOP>"], true],
-        ["open-mount", ["sudo", "sh", "-c", `cryptsetup luksOpen $(sudo losetup -j ${img} --output NAME --noheadings | cut -d: -f1) ${mapper} && mkfs.ext4 /dev/mapper/${mapper} && mkdir -p ${mnt} && mount /dev/mapper/${mapper} ${mnt} && chown $(id -u):$(id -g) ${mnt}`], false],
-      ];
-      for (const [id, argv, destructive] of steps) {
-        if (destructive && !consent) { log += `[step] skipped ${id} (no consent)\n`; continue; }
-        log += `[step] started ${id}\n`;
-        const loop = (() => { try { return execFileSync("sudo", ["losetup", "-j", img, "--output", "NAME", "--noheadings"], { encoding: "utf8" }).split("\n")[0].trim(); } catch { return ""; } })();
-        const resolved = argv.map((a) => a === "" ? loop : a.replace("<LOOP>", loop || "<LOOP>")).filter(Boolean);
-        const child = spawn(resolved[0], resolved.slice(1), { stdio: ["inherit", "pipe", "pipe"] });
-        child.stdout?.on("data", (d) => (log += d));
-        child.stderr?.on("data", (d) => (log += d));
-        const code = await new Promise((res) => child.on("close", res));
-        log += `[step] finished ${id}\n`;
-        if (code !== 0) { log += `provision-all failed at ${id} (rc=${code})\n`; log += "provision-all done\n"; return; }
-      }
-      log += "provision-all done\n";
+      const es = lang === "es";
+      log += "provision-all running\n";
+      const script = [
+        "set -eu",
+        `IMG='${img}'`, `MAPPER='${mapper}'`, `MNT='${mnt}'`,
+        es ? "echo '--- PASO 1/4: crear la imagen (sin password)...'" : "echo '--- STEP 1/4: create the image (no password)...'",
+        `echo '[step] started create-image'`,
+        `truncate -s ${isTest() ? "64M" : "150G"} "$IMG"`,
+        `echo '[step] finished create-image'`,
+        es ? "echo '--- PASO 2/4: asociar el loop (te puede pedir tu password de sudo)'" : "echo '--- STEP 2/4: associate the loop (sudo password may be asked)'",
+        `echo '[step] started associate-loop'`,
+        `LOOP=$(losetup --find --show "$IMG" | cut -d: -f1)`,
+        `echo "[step] finished associate-loop"`,
+        `echo "LOOP=$LOOP"`,
+        consent ? "true" : "exit 3",
+        es ? "echo '--- PASO 3/4: formatear LUKS — LA CONSOLA TE VA A PEDIR: YES y tu frase de paso'" : "echo '--- STEP 3/4: format LUKS — THE CONSOLE WILL ASK: YES and your passphrase'",
+        `echo '[step] started format-luks'`,
+        `cryptsetup luksFormat "$LOOP"`,
+        `echo '[step] finished format-luks'`,
+        es ? "echo '--- PASO 4/4: abrir y montar — la consola pide tu frase de paso (dos veces)'" : "echo '--- STEP 4/4: open and mount — the console asks your passphrase (twice)'",
+        `echo '[step] started open-mount'`,
+        `cryptsetup luksOpen "$LOOP" "$MAPPER"`,
+        `mkfs.ext4 /dev/mapper/"$MAPPER"`,
+        `mkdir -p "$MNT"`,
+        `mount /dev/mapper/"$MAPPER" "$MNT"`,
+        `chown 1000:1000 "$MNT" 2>/dev/null || true`,
+        `echo '[step] finished open-mount'`,
+        es ? "echo '--- LISTO: el volumen está montado. Volvé al wizard y continuá.'" : "echo '--- DONE: volume mounted. Back to the wizard to continue.'",
+      ].join("\n");
+      const child = spawn("sudo", ["sh", "-c", script], { stdio: ["inherit", "pipe", "pipe"] });
+      child.stdout?.on("data", (d) => (log += d));
+      child.stderr?.on("data", (d) => (log += d));
+      child.on("close", (code) => {
+        log += code === 0 ? "provision-all done\n" : `provision-all failed (rc=${code})\n`;
+      });
+      return;
     });
     return;
   }
