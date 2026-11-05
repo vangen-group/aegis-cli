@@ -123,3 +123,17 @@
   bilingüe; /api/volume/verify verifica cada paso de forma estrictamente
   read-only (sin luksFormat/luksOpen/mount — la frase de paso jamás toca el
   server). Tests 17/17.
+- S8 (2026-11-05, re-encuadre del dueño): los CLIENTES no tienen volumen —
+  hay que crearlo para ellos. El wizard debe EJECUTAR el aprovisionamiento
+  (§4) del cliente, no solo guiarlo. Diseño de seguridad (inviable de otro
+  modo bajo S3/S6): el wizard ejecuta cada paso como proceso hijo con
+  stdio heredado de la terminal (el .cmd/.command ya abre una consola) — así
+  la frase de paso la pide cryptsetup DIRECTO por TTY y nunca atraviesa el
+  navegador ni el server; sudo pregunta su contraseña igual por TTY. Los
+  pasos no secretos (truncate, losetup, mkfs tras open, mount) corren igual
+  con stdio heredado y su verificación read-only existente marca el ok.
+  Pendiente T12: ejecutor de aprovisionamiento con stdio heredado + botón
+  "Provisionar" por paso en la tarjeta del volumen + pantalla de consentimiento
+  del destructivo (luksFormat) con YES. La guía read-only queda para el modo
+  dev (AEGIS_INSTALLER_DEV=1); para clientes los botones pasan de "Verificar"
+  a "Ejecutar paso".
