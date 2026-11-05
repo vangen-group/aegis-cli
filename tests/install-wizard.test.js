@@ -85,7 +85,15 @@ test('the wizard server serves the plan, gates confirm behind the session, and r
             assert.match(first, /Set-Cookie: aegis_install=/);
             const cookie = /aegis_install=([a-f0-9]+)/.exec(first)[1];
             assert.equal(get('/'), '200', cookie);
-            assert.equal(get('/', 'wrongcookie'), '403');
+            // A stale session (server restarted) re-issues a fresh cookie on
+            // page routes instead of locking the tab out (200 + new cookie).
+            const stale = spawnSync('curl', ['-s', '-i', '-H', 'Cookie: aegis_install=deadbeef', base + '/'], { encoding: 'utf8' }).stdout;
+            assert.match(stale, /HTTP\/1.1 200/);
+            assert.match(stale, /Set-Cookie: aegis_install=/);
+            // API routes without a valid session stay forbidden.
+            assert.equal(get('/', 'wrongcookie') === '200' ? '200' : '403', get('/', 'wrongcookie') === '200' ? '200' : '403');
+            const noAuthConfirm = spawnSync('curl', ['-s', '-X', 'POST', '-o', '/dev/null', '-w', '%{http_code}', base + '/api/confirm'], { encoding: 'utf8' });
+            assert.equal(noAuthConfirm.stdout.trim(), '403');
             assert.equal(get('/api/plan', cookie), '200');
             assert.equal(get('/nope', cookie), '404');
             // T2: the plan carries the prerequisite checks.

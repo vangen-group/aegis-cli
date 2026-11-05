@@ -51,7 +51,11 @@ createServer(async (req, res) => {
     res.end(body);
   };
   const auth = (req.headers.cookie || "").includes(`aegis_install=${cookie}`);
-  if (url.pathname === "/" && auth === false && !req.headers.cookie) {
+  const isPage = url.pathname === "/" || url.pathname === "/wizard.js" || url.pathname === "/wizard.css";
+  if (!auth && isPage) {
+    // No session, or a stale one (server restarted while the tab stayed
+    // open): re-issue a fresh session instead of locking the tab out. API
+    // routes keep the 403 — only a confirmed session can start the install.
     res.writeHead(200, { ...headers, "Content-Type": "text/html", "Set-Cookie": `aegis_install=${cookie}; HttpOnly; SameSite=Strict` });
     return res.end(HTML);
   }
