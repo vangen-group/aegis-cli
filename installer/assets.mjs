@@ -27,6 +27,7 @@ export const HTML = `<!doctype html><html lang="en"><head><meta charset="utf-8">
       <li class="stage stage-upcoming" data-stage="4"><span class="stage-dot" aria-hidden="true">4</span><span class="stage-label">Done</span></li>
     </ol>
   </nav>
+  <div class="layout">
   <div class="view">
     <section class="panel" id="card-reqs" aria-labelledby="reqs-title">
       <p class="eyebrow">Step 1 of 4 &middot; Check</p>
@@ -63,17 +64,12 @@ export const HTML = `<!doctype html><html lang="en"><head><meta charset="utf-8">
       <p class="eyebrow">Step 3 of 4 &middot; Install</p>
       <h1 id="run-title" tabindex="-1">Installing Aegis CLI</h1>
       <p class="lead">The installer output streams below. Closing this tab does not stop it.</p>
-      <div class="run-grid">
-        <div class="run-progress">
-          <div class="progress" role="progressbar" aria-label="Install progress"><div class="bar" id="bar"></div></div>
-          <p class="progress-label" id="progress-label">Starting…</p>
-          <p id="next" class="next"></p>
-          <div class="run-actions">
-            <button id="done" class="btn btn-primary" hidden>Finish</button>
-            <button id="retry" class="btn btn-ghost" hidden>Back to the plan</button>
-          </div>
-        </div>
-        <pre id="log" class="terminal console" aria-label="Installer output"></pre>
+      <div class="progress" role="progressbar" aria-label="Install progress"><div class="bar" id="bar"></div></div>
+      <p class="progress-label" id="progress-label">Starting…</p>
+      <p id="next" class="next"></p>
+      <div class="panel-actions">
+        <button id="done" class="btn btn-primary" hidden>Finish</button>
+        <button id="retry" class="btn btn-ghost" hidden>Back to the plan</button>
       </div>
     </section>
 
@@ -86,6 +82,11 @@ export const HTML = `<!doctype html><html lang="en"><head><meta charset="utf-8">
         <button id="finish" class="btn btn-primary">Finish</button>
       </div>
     </section>
+  </div>
+  <aside class="console-dock" aria-label="Installer console">
+    <p class="console-head"><span class="dot" aria-hidden="true"></span> Installer console</p>
+    <pre id="log" class="terminal console" aria-label="Installer output">console idle — the installer output appears here once you press Install.</pre>
+  </aside>
   </div>
 </main>
 <footer class="footer">
@@ -130,6 +131,10 @@ function startRun(){
     }}),400);
 }
 let pnext='';
+const pollLog=setInterval(()=>fetch('/api/log').then(r=>r.text()).then(t2=>{
+  if(!t2)return;
+  el('log').textContent=t2;el('log').scrollTop=el('log').scrollHeight;
+}),500);
 fetch('/api/plan').then(r=>r.json()).then(p=>{
   pnext=p.next||'';
   const planEl=el('plan');planEl.textContent='';
@@ -243,8 +248,12 @@ h1{margin:0 0 8px;font-size:clamp(1.5rem,3vw,2rem);letter-spacing:-.02em}
 .optin input{width:18px;height:18px;accent-color:var(--accent-strong);margin-top:3px;flex:none}
 .optin-body strong{display:block;font-size:.92rem}
 .optin-body small{color:var(--text-muted)}
-.run-grid{display:grid;grid-template-columns:minmax(13rem,5fr) minmax(0,7fr);gap:18px}
-@media (max-width:52rem){.run-grid{grid-template-columns:1fr}}
+.layout{display:grid;grid-template-columns:minmax(0,3fr) minmax(11rem,2fr);gap:18px;align-items:start}
+@media (max-width:56rem){.layout{grid-template-columns:1fr}}
+.console-dock{position:sticky;top:16px;display:flex;flex-direction:column;min-width:0}
+.console-head{display:flex;align-items:center;gap:8px;margin:0 0 10px;padding:0 4px;
+  font:600 11px/1.4 var(--font-mono);letter-spacing:.12em;text-transform:uppercase;color:var(--text-faint)}
+.console{min-height:16rem;max-height:32rem;font-size:11.5px}
 .progress{height:10px;border-radius:var(--radius-pill);background:var(--bg-deep);
   border:1px solid var(--border-soft);overflow:hidden}
 .bar{height:100%;width:0;border-radius:var(--radius-pill);
