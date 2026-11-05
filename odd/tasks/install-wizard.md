@@ -75,3 +75,8 @@
   ventana se cerraba sin dejar leer el mensaje. Fix: wslpath -a + if
   errorlevel 1 (echo + pause) tras la llamada a WSL; la ventana ahora queda
   abierta mostrando el error. Suite 9/9.
+- L4 (2026-11-05): el dueño probó el .cmd desde WSL — el .cmd es SOLO para
+  double-click en el Explorador de Windows; desde Ubuntu se corre
+  `sh installer/bootstrap.sh` directo. Hardening igual incorporado: pausa
+  incondicional al final del .cmd y BUNDLE_DIR vía WSLENV (sin anidar
+  comillas Windows→sh).
