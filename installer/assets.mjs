@@ -64,8 +64,14 @@ export const HTML = `<!doctype html><html lang="en"><head><meta charset="utf-8">
       <p class="eyebrow">Step 3 of 4 &middot; Install</p>
       <h1 id="run-title" tabindex="-1">Installing Aegis CLI</h1>
       <p class="lead">The installer output streams below. Closing this tab does not stop it.</p>
-      <div class="progress" role="progressbar" aria-label="Install progress"><div class="bar" id="bar"></div></div>
-      <p class="progress-label" id="progress-label">Starting…</p>
+      <div class="progress">
+        <div class="progress-head">
+          <span class="progress-title">Progress</span>
+          <span class="progress-count" id="progress-count">Starting…</span>
+        </div>
+        <div role="progressbar" aria-label="Install progress"><div class="bar" id="bar"></div></div>
+        <ul id="steps" class="steps"></ul>
+      </div>
       <p id="next" class="next"></p>
       <div class="panel-actions">
         <button id="done" class="btn btn-primary" hidden>Finish</button>
@@ -112,23 +118,37 @@ function go(stage){
 function startRun(){
   go(3);
   el('bar').style.width='8%';el('bar').classList.add('bar-run');
-  el('progress-label').textContent='Running install.sh…';
+  el('progress-count').textContent='Running install.sh…';
   fetch('/api/confirm',{method:'POST',body:JSON.stringify({telemetry:el('telemetry').checked})});
-  let lines=0;
-  const t=setInterval(()=>fetch('/api/log').then(r=>r.text()).then(t2=>{
-    el('log').textContent=t2;el('log').scrollTop=el('log').scrollHeight;
-    const n=t2.split('\\n').length;
-    if(n>lines)el('bar').style.width=Math.min(92,8+n*2)+'%';
-    lines=n;
-    const m=/INSTALL-FINISHED rc=(\\d+)/.exec(t2);
-    if(m){clearInterval(t);
-      el('bar').style.width='100%';el('bar').classList.remove('bar-run');
-      if(m[1]==='0'){go(4);
-        el('next-done').textContent=(typeof pnext!=='undefined'&&pnext)||'aegis install <license-id>';}
-      else{el('bar').classList.add('bar-error');
-        el('progress-label').textContent='The installer failed \\u2014 read the console.';
-        el('retry').hidden=false;}
-    }}),400);
+  const t=setInterval(()=>{
+    const logP=fetch('/api/log').then(r=>r.text()).then(t2=>{
+      if(t2){el('log').textContent=t2;el('log').scrollTop=el('log').scrollHeight;}
+      const m=/INSTALL-FINISHED rc=(\\d+)/.exec(t2);
+      if(m){clearInterval(t);el('bar').classList.remove('bar-run');
+        if(m[1]==='0'){el('bar').style.width='100%';go(4);
+          el('next-done').textContent=(typeof pnext!=='undefined'&&pnext)||'aegis install <license-id>';}
+        else{el('bar').classList.add('bar-error');el('bar').style.width='100%';
+          el('progress-count').textContent='The installer failed — read the console.';
+          el('retry').hidden=false;}}
+    });
+    fetch('/api/progress').then(r=>r.json()).then(p=>{
+      const box=el('steps');box.innerHTML='';
+      for(const st of (p.steps||[])){
+        const li=document.createElement('li');li.className='step step-'+st.status;
+        const icon=document.createElement('span');icon.className='step-icon';
+        if(st.status==='running'){const sp=document.createElement('span');sp.className='spinner';icon.append(sp);}
+        else icon.textContent=st.status==='done'?'\u2713':st.status==='failed'?'\u2717':'\u00B7';
+        const label=document.createElement('span');label.className='step-label';label.textContent=st.label;
+        const stat=document.createElement('span');stat.className='step-status';stat.textContent=st.status==='running'?'in progress':st.status;
+        li.append(icon,label,stat);box.append(li);
+      }
+      el('bar').style.width=Math.max(6,Math.round(100*(p.done||0)/(p.total||4)))+'%';
+      if(!p.finished){
+        const run=(p.steps||[]).find(x=>x.status==='running');
+        el('progress-count').textContent='Step '+Math.min((p.done||0)+1,p.total||4)+' of '+(p.total||4)+(run?' — '+run.label.toLowerCase():'');
+      }
+    }).catch(()=>{});
+  },400);
 }
 let pnext='';
 const pollLog=setInterval(()=>fetch('/api/log').then(r=>r.text()).then(t2=>{
@@ -257,8 +277,22 @@ h1{margin:0 0 8px;font-size:clamp(1.5rem,3vw,2rem);letter-spacing:-.02em}
 .console-head{display:flex;align-items:center;gap:8px;margin:0 0 10px;padding:0 4px;
   font:600 11px/1.4 var(--font-mono);letter-spacing:.12em;text-transform:uppercase;color:var(--text-faint)}
 .console{min-height:16rem;max-height:32rem;font-size:11.5px}
-.progress{height:10px;border-radius:var(--radius-pill);background:var(--bg-deep);
-  border:1px solid var(--border-soft);overflow:hidden}
+.progress{padding:16px 18px;border:1px solid var(--border);border-radius:var(--radius);background:var(--surface-1);margin-bottom:14px}
+.progress-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-bottom:10px}
+.progress-title{color:var(--text-muted);font:600 11px/1.4 var(--font-mono);letter-spacing:.12em;text-transform:uppercase}
+.progress-count{font:600 13px/1.4 var(--font-mono);color:var(--accent-soft)}
+.progress>div[role="progressbar"]{height:10px;border-radius:999px;background:var(--bg-deep);border:1px solid var(--border-soft);overflow:hidden}
+.steps{display:grid;gap:2px;margin:12px 0 0;padding:0;list-style:none}
+.step{display:grid;grid-template-columns:26px 1fr auto;align-items:center;gap:12px;padding:8px 10px;border-radius:10px;border:1px solid transparent}
+.step-running{border-color:#34d39933;background:#34d3990d}
+.step-icon{display:grid;place-items:center;width:24px;height:24px;border:1.5px solid var(--border);border-radius:50%;font:700 12px/1 var(--font-mono);color:var(--text-faint)}
+.step-done .step-icon{border-color:#6ee7b799;background:#6ee7b733;color:var(--success)}
+.step-failed .step-icon{border-color:#ff718f99;background:#ff718f33;color:var(--error)}
+.step-label{min-width:0;font-size:14px}
+.step-status{color:var(--text-faint);font:600 10.5px/1.4 var(--font-mono);letter-spacing:.08em;text-transform:uppercase;white-space:nowrap}
+.step-running .step-status{color:var(--accent)}
+.spinner{width:12px;height:12px;border:2px solid #34d39933;border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
 .bar{height:100%;width:0;border-radius:var(--radius-pill);
   background:linear-gradient(90deg,var(--accent-strong),var(--accent-soft));transition:width .4s var(--ease)}
 .bar-run{background:linear-gradient(90deg,var(--accent-strong),var(--accent-soft),var(--accent-strong));

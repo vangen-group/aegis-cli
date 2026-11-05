@@ -96,3 +96,8 @@
   seccionado del wizard. Además su mensaje final decía "aegis account
   activate" (ortografía previa al rediseño) — corregido a "aegis license
   activate".
+- L9 (2026-11-05, feedback del dueño): la barra solo aparecía en el paso 3 y
+  sin detalle. Adoptado el modelo de gentle: /api/progress deriva del log los
+  4 pasos (cosign, download, verify, install) con estado
+  pending/running/done; el panel Install muestra la lista con spinner
+  animado, barra done/total y contador "Step X of 4 — <paso>". Suite 10/10.
