@@ -122,4 +122,4 @@ case ":${PATH}:" in
     *":${install_dir}:"*) ;;
     *) log "NOTE: ${install_dir} is not on your PATH yet — add it in your shell profile (~/.bashrc, ~/.zshrc)" ;;
 esac
-log "next: ${install_dir}/aegis account activate <license-id>"
+log "next: ${install_dir}/aegis license activate <license-id>"

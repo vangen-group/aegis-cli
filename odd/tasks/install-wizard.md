@@ -89,3 +89,10 @@
   `sh installer/bootstrap.sh` directo. Hardening igual incorporado: pausa
   incondicional al final del .cmd y BUNDLE_DIR vía WSLENV (sin anidar
   comillas Windows→sh).
+- L8 (2026-11-05, prueba real del dueño, rc=0 en su WSL2): install.sh funciona
+  de punta a punta, pero es un monolito (resuelve plataforma + baja cosign +
+  fetch&verify + extrae&instala en un solo script). Pendiente T10:
+  modularizar install.sh en pasos orquestados, alineado con el plan
+  seccionado del wizard. Además su mensaje final decía "aegis account
+  activate" (ortografía previa al rediseño) — corregido a "aegis license
+  activate".
