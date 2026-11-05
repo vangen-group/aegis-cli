@@ -10,7 +10,11 @@ const HINTS = {
     virtualization:
         'enable virtualization in your BIOS/UEFI firmware (Intel VT-x / AMD-V), then run this installer again',
     wsl2: 'in an Administrator PowerShell run: dism.exe /online /enable-feature /featurename:Microsoft-Windows-Subsystem-Linux /all /norestart && dism.exe /online /enable-feature /featurename:VirtualMachinePlatform /all /norestart && wsl --update && wsl --set-default-version 2 — then RESTART Windows and verify with wsl --status (Default Version: 2). Docker Desktop needs this backend',
+    docker: 'install Docker Desktop (docker.com) — on Windows enable the WSL2 backend first; then start it and run this installer again',
 };
+
+// docker info answers both "installed" and "running" in one probe.
+const dockerProbe = (r) => r('docker', ['info']).status === 0;
 
 // Returns [{id,label,state:'ok'|'missing'|'unknown',hint}]. Never throws.
 function collectPrereqs({ platform = process.platform, runner } = {}) {
@@ -21,7 +25,6 @@ function collectPrereqs({ platform = process.platform, runner } = {}) {
             return { status: e.status ?? 1, stdout: e.stdout || '', stderr: e.stderr || String(e.message || e) };
         }
     });
-    if (platform === 'darwin') return []; // macOS needs no virtualization/WSL check.
     const check = (id, label, probe) => {
         let state = 'unknown';
         try {
@@ -32,6 +35,10 @@ function collectPrereqs({ platform = process.platform, runner } = {}) {
         }
         return { id, label, state, hint: HINTS[id] };
     };
+    if (platform === 'darwin') {
+        // macOS needs no virtualization/WSL check — Docker only.
+        return [check('docker', 'Docker Desktop running', dockerProbe)];
+    }
     if (platform === 'win32') {
         return [
             check('virtualization', 'Virtualization enabled in firmware', (r) =>
@@ -40,10 +47,15 @@ function collectPrereqs({ platform = process.platform, runner } = {}) {
                 )
             ),
             check('wsl2', 'WSL2 installed', (r) => r('wsl.exe', ['--status']).status === 0),
+            check('docker', 'Docker Desktop running', dockerProbe),
         ];
     }
-    // Linux: the workstation later needs KVM for the sandbox.
-    return [check('virtualization', 'KVM available', (r) => fs.existsSync('/dev/kvm') && r('test', ['-w', '/dev/kvm']).status === 0)];
+    // Linux: the workstation later needs KVM for the sandbox, and Docker
+    // everywhere — the whole aegis chain runs on it.
+    return [
+        check('virtualization', 'KVM available', (r) => fs.existsSync('/dev/kvm') && r('test', ['-w', '/dev/kvm']).status === 0),
+        check('docker', 'Docker Desktop running', dockerProbe),
+    ];
 }
 
 module.exports = { collectPrereqs };

@@ -39,6 +39,11 @@
 - T3 [S4] Pantalla final: opt-in telemetry + "siguiente: aegis install
   <license-id>" (primer viaje, client-redesign L4.2).
 - T4 LUKS: detección de los tres estados del volumen (S3) — fase posterior.
+- T6 [S2] HECHO: el wizard chequea Docker Desktop (probe `docker info`) en las
+  tres plataformas — responde a "instalado" y "corriendo" a la vez; hint
+  apunta a Docker Desktop + backend WSL2. La cadena completa WSL2 -> Docker
+  Desktop -> imagen de la workstation queda: WSL2/virtualización/docker en
+  este wizard; el estado del volumen LUKS sigue siendo T4 (fase workstation).
 - T5 Release workflow que publique los zips en GitHub Releases + redirect en
   vangengroup.com.
 
