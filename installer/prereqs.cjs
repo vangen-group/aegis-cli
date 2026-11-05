@@ -56,6 +56,18 @@ function collectPrereqs({ platform = process.platform, runner, demo = process.en
         }
         return { id, label: resolvedLabel, state, hint };
     };
+    if (platform === 'windows-wsl') {
+        // The .cmd relaunched us inside the WSL2 Ubuntu distro: virtualization
+        // is already proven (we would not be here otherwise) and /dev/kvm is
+        // not exposed to WSL2 guests, so demanding it here would block every
+        // valid setup. Docker (Desktop with WSL2 backend, or Engine) is the
+        // real requirement.
+        return [
+            { id: 'virtualization', label: 'Virtualization is active — you are running inside WSL2', state: 'ok', hint: HINTS.virtualization },
+            check('docker', 'Docker Desktop running (WSL2 backend)', dockerProbe, HINTS.docker),
+            check('aegis', '', aegisCheck, HINTS.aegis),
+        ];
+    }
     if (platform === 'darwin') {
         // macOS needs no virtualization/WSL check — Docker Desktop only.
         return [check('docker', 'Docker Desktop running', dockerProbe), check('aegis', '', aegisCheck, HINTS.aegis)];

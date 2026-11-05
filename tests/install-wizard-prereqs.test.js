@@ -70,3 +70,13 @@ test('the default runner works without arguments on the current platform', () =>
     assert.ok(Array.isArray(prereqs));
     assert.ok(prereqs.every((p) => ['ok', 'missing', 'unknown'].includes(p.state)));
 });
+
+test('under windows-wsl virtualization is auto-ok (we ARE inside WSL2) and /dev/kvm is not demanded (L5)', () => {
+    const prereqs = collectPrereqs({ platform: 'windows-wsl', runner: (cmd) => (cmd === 'docker' ? { status: 0, stdout: 'ok', stderr: '' } : { status: 1, stdout: '', stderr: '' }) });
+    assert.deepEqual(prereqs.map((p) => [p.id, p.state]), [['virtualization', 'ok'], ['docker', 'ok'], ['aegis', 'ok']]);
+    assert.match(prereqs[0].label, /inside WSL2/);
+    assert.ok(prereqs.every((p) => p.id !== 'kvm') && !JSON.stringify(prereqs).includes('/dev/kvm'), 'no KVM check under WSL2');
+    // Without docker it still blocks (the real requirement).
+    const noDocker = collectPrereqs({ platform: 'windows-wsl', runner: () => ({ status: 1, stdout: '', stderr: '' }) });
+    assert.deepEqual(noDocker.map((p) => [p.id, p.state]), [['virtualization', 'ok'], ['docker', 'missing'], ['aegis', 'ok']]);
+});

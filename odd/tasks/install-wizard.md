@@ -75,6 +75,10 @@
   ventana se cerraba sin dejar leer el mensaje. Fix: wslpath -a + if
   errorlevel 1 (echo + pause) tras la llamada a WSL; la ventana ahora queda
   abierta mostrando el error. Suite 9/9.
+- L5 (2026-11-05, reporte del dueño de su máquina real): bajo windows-wsl el
+  wizard exigía /dev/kvm (checks de Linux nativo) — WSL2 no expone KVM y la
+  virtualización ya está demostrada por estar adentro del distro. Fix: en
+  windows-wsl virtualización = ok automático, checks reales = Docker + aegis.
 - L4 (2026-11-05): el dueño probó el .cmd desde WSL — el .cmd es SOLO para
   double-click en el Explorador de Windows; desde Ubuntu se corre
   `sh installer/bootstrap.sh` directo. Hardening igual incorporado: pausa

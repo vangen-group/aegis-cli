@@ -65,7 +65,7 @@ const PLANS = {
       INSTALL_STEP("inside this WSL2 Ubuntu environment — nothing is written to the Windows host, the host only had the zip"),
       WORKSTATION_STEP("Everything lives inside the WSL2 Ubuntu distro; removing it removes all of Aegis."),
     ],
-    prereqsPlatform: "linux",
+    prereqsPlatform: "windows-wsl",
   },
   darwin: {
     sections: [...COMMON,
