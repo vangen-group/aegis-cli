@@ -50,11 +50,17 @@ export const HTML = `<!doctype html><html lang="en"><head><meta charset="utf-8">
       <p class="lead" data-i18n="volume-lead">Tus secretos y entornos viven cifrados en un volumen LUKS. Si todavía no existe, el wizard lo crea con vos — la frase de paso se escribe SOLO en la consola y nunca atraviesa el wizard.</p>
       <p class="prereq"><span class="dot dot-unknown" id="volume-dot"></span><span id="volume-state">Consultando el volumen…</span></p>
       <div id="volume-guide" hidden>
-        <p class="hint" data-i18n="vol-guide-hint">Aprovisionalo con estos pasos — la frase de paso se escribe SOLO en el prompt de cryptsetup:</p>
-        <ol id="volume-steps" class="steps"></ol>
+        <p class="hint" data-i18n="vol-guide-hint">El wizard crea el volumen con vos: apretá Crear y seguí la consola — la frase de paso y el YES se escriben SOLO ahí.</p>
+        <div class="progress">
+          <div class="progress-head"><span class="progress-title" data-i18n="progress">Progreso</span><span class="progress-count" id="volume-progress-count"></span></div>
+          <div role="progressbar" aria-label="Volume progress"><div class="bar" id="volume-bar"></div></div>
+          <ul id="volume-steps" class="steps"></ul>
+        </div>
       </div>
       <div class="panel-actions">
-        <button id="to-install" class="btn btn-primary" data-i18n="to-install">Continuar a la instalación</button>
+        <button id="volume-go" class="btn btn-primary" data-i18n="vol-create">Crear el volumen</button>
+        <button id="to-install" class="btn btn-primary" hidden data-i18n="to-install">Continuar a la instalación</button>
+        <button id="volume-retry" class="btn btn-ghost" hidden data-i18n="retry">Reintentar</button>
       </div>
     </section>
 
@@ -191,11 +197,11 @@ function startRun(){
   },400);
 }
 const I18N = {
-  es: {'local':'Instalador local','reqs-title':'Verificando esta computadora','checking':'Verificando tu máquina…','waiting':'Esperando los checks…','review':'Revisar el plan','to-volume':'Continuar','to-install':'Continuar a la instalación','plan-title':'Confirmá el plan','back':'Volver','install':'Instalar Aegis CLI','run-title':'Instalando Aegis CLI','progress':'Progreso','finish':'Listo','retry':'Volver al plan','done-title':'Aegis CLI está instalado',
+  es: {'local':'Instalador local','reqs-title':'Verificando esta computadora','checking':'Verificando tu máquina…','waiting':'Esperando los checks…','review':'Revisar el plan','to-volume':'Continuar','vol-create':'Crear el volumen','to-install':'Continuar a la instalación','plan-title':'Confirmá el plan','back':'Volver','install':'Instalar Aegis CLI','run-title':'Instalando Aegis CLI','progress':'Progreso','finish':'Listo','retry':'Volver al plan','done-title':'Aegis CLI está instalado',
     'st1':'Check','st2':'Revisar','st3':'Volumen','st4':'Install','st5':'Listo','eyebrow1':'Paso 1 de 5 · Check','eyebrow2':'Paso 2 de 5 · Revisar','eyebrow3':'Paso 3 de 5 · Volumen','eyebrow4':'Paso 4 de 5 · Instalar','eyebrow5':'Paso 5 de 5 · Listo','volume-h1':'Tu volumen seguro LUKS','volume-lead':'Tus secretos y entornos viven cifrados en un volumen LUKS. Si todavía no existe, el wizard lo crea con vos — la frase de paso se escribe SOLO en la consola y nunca atraviesa el wizard.',
     'running':'en progreso','done':'hecho','pending':'pendiente','failed':'falló',
     'step-of':(a,b)=>'Paso '+a+' de '+b},
-  en: {'local':'Local installer','reqs-title':'Checking this computer','checking':'Checking your machine…','waiting':'Waiting for checks…','review':'Review the plan','to-volume':'Continue','to-install':'Continue to install','plan-title':'Confirm the plan','back':'Back','install':'Install Aegis CLI','run-title':'Installing Aegis CLI','progress':'Progress','finish':'Finish','retry':'Back to the plan','done-title':'Aegis CLI is installed',
+  en: {'local':'Local installer','reqs-title':'Checking this computer','checking':'Checking your machine…','waiting':'Waiting for checks…','review':'Review the plan','to-volume':'Continue','vol-create':'Create the volume','to-install':'Continue to install','plan-title':'Confirm the plan','back':'Back','install':'Install Aegis CLI','run-title':'Installing Aegis CLI','progress':'Progress','finish':'Finish','retry':'Back to the plan','done-title':'Aegis CLI is installed',
     'eyebrow1':'Step 1 of 4 · Check','eyebrow2':'Step 2 of 4 · Review','eyebrow3':'Step 3 of 4 · Install','eyebrow4':'Step 4 of 4 · Done',
     'running':'in progress','done':'done','pending':'pending','failed':'failed',
     'step-of':(a,b)=>'Step '+a+' of '+b},
@@ -257,83 +263,64 @@ fetch('/api/plan').then(r=>r.json()).then(p=>{
   fetch('/api/volume/state').then(r=>r.json()).then(v=>{
     const t=VOL[LANG]||VOL.es;
     const dot=el('volume-dot'), st=el('volume-state');
-    // T13: in test-volume mode, a cleanup button removes the test volume
-    // (never a real one — the server refuses non-test paths).
-    if(v.isTest && v.state!=='missing'){
-      const cb=document.createElement('button');cb.className='btn btn-ghost btn-verify';
-      cb.textContent=LANG==='es'?'Eliminar volumen de prueba':'Delete test volume';
-      cb.style.marginLeft='10px';
-      cb.onclick=async()=>{cb.disabled=true;
-        await fetch('/api/volume/cleanup',{method:'POST'});
-        st.textContent=LANG==='es'?'volumen de prueba eliminado':'test volume removed';
-        dot.className='dot dot-missing';cb.hidden=true;};
-      st.after(cb);
-    }
     dot.className='dot '+(v.state==='mounted'?'dot-ok':v.state==='sealed'?'dot-unknown':'dot-missing');
     st.textContent=(t[v.state]||v.state)+(v.img?' ('+v.img+')':'');
-    // T13: test volume exists (sealed/half-provisioned)? offer cleanup.
-    if(v.isTest&&v.state!=='missing'){
-      if(document.getElementById('vcleanup'))return;
-      const cb=document.createElement('button');cb.className='btn btn-ghost btn-verify';cb.id='vcleanup';
-      cb.style.marginLeft='10px';
-      cb.textContent=LANG==='es'?'Eliminar volumen de prueba':'Delete test volume';
-      cb.onclick=async()=>{cb.disabled=true;
-        await fetch('/api/volume/cleanup',{method:'POST'});
-        st.textContent=LANG==='es'?'volumen de prueba eliminado':'test volume removed';
-        dot.className='dot dot-missing';cb.hidden=true;
-        el('volume-guide').hidden=true;};
-      st.after(cb);
-      if(v.state==='sealed')return; // nothing to provision — it exists
-    }
-    if(v.state!=='missing')return;
-    if(!(v.provisioning||[]).length)return; // (defensive: list is always sent now)
+    if(v.state==='mounted'){el('to-install').hidden=false;return;}
     el('volume-guide').hidden=false;
-    el('volume-guide').querySelector('[data-i18n=vol-guide-hint]').textContent=t.guide;
-    const box=el('volume-steps');box.innerHTML='';
-    for(const p of v.provisioning||[]){
-      const li=document.createElement('li');li.className='vstep';
-      const num=document.createElement('span');num.className='plan-num';num.textContent=String([...box.children].length+1);
-      const wrap=document.createElement('div');wrap.className='vstep-body';
-      const label=document.createElement('span');label.className='step-label';label.textContent=p.text;
-      const isDev=(v.dev===true);
-      const btn=document.createElement('button');btn.className='btn btn-ghost btn-verify';
-      btn.textContent=isDev?t.verify:(t.execute||'Ejecutar');
-      const stat=document.createElement('span');stat.className='step-status';
-      btn.onclick=async()=>{
-        btn.disabled=true;stat.textContent='…';
-        if(!isDev){
-          // T12: execute FOR the client — cryptsetup/sudo prompt in the
-          // installer console (stdio inherit); the passphrase never crosses
-          // the browser. Ask consent for the destructive step.
-          if(p.id==='format-luks'&&!confirm(LANG==='es'?'⚠️ DESTRUCTIVO: se formateará el volumen con LUKS. Sin la frase de paso los datos son irrecuperables por diseño. ¿Continuar?':'⚠️ DESTRUCTIVE: the volume will be LUKS-formatted. Without the passphrase data is unrecoverable by design. Continue?')){btn.disabled=false;stat.textContent='';return;}
-          const r=await fetch('/api/volume/provision',{method:'POST',body:JSON.stringify({step:p.id,consent:p.id==='format-luks'})}).then(x=>x.json()).catch(()=>({error:'x'}));
-          if(r.started===true){stat.textContent=LANG==='es'?'corriendo… mirá la consola':'running… watch the console';
-            stat.className='step-status state-unknown';
-            const vb=document.createElement('button');vb.className='btn btn-ghost btn-verify';vb.textContent=t.verify;
-            vb.onclick=async()=>{vb.disabled=true;
-              const v2=await fetch('/api/volume/verify',{method:'POST',body:JSON.stringify({step:p.id})}).then(x=>x.json()).catch(()=>({ok:false}));
-              if(v2.ok){ // UX: done state — green card, no button, 'listo'
-                li.classList.add('vstep-done');btn.hidden=true;vb.hidden=true;
-                stat.textContent='\u2713 '+(LANG==='es'?'listo':'done');stat.className='step-status state-ok';
-              } else {vb.disabled=false;stat.textContent=t.fail;stat.className='step-status state-missing';
-                li.classList.add('vstep-fail');
-                fetch('/api/log').then(r=>r.text()).then(t3=>{
-                  const lines=t3.trim().split('\\n').slice(-3).join(' | ');
-                  const err=document.createElement('div');err.className='hint';
-                  err.textContent=(LANG==='es'?'última salida: ':'last output: ')+lines;
-                  wrap.append(err);});}
-            };
-            li.append(vb);
-          } else {stat.textContent=r.error||t.fail;stat.className='step-status state-missing';btn.disabled=false;}
-          return;
-        }
-        const r=await fetch('/api/volume/verify',{method:'POST',body:JSON.stringify({step:p.id})}).then(x=>x.json()).catch(()=>({ok:false}));
-        if(r.ok){li.classList.add('vstep-done');btn.hidden=true;
-          stat.textContent='\u2713 '+(LANG==='es'?'listo':'done');stat.className='step-status state-ok';}
-        else {li.classList.add('vstep-fail');stat.textContent=t.fail;stat.className='step-status state-missing';btn.disabled=false;}
-      };
-      wrap.append(label,btn,stat);li.append(num,wrap);box.append(li);
+    const VOLGO=async()=>{
+      el('volume-go').disabled=true;
+      await fetch('/api/volume/provision-all',{method:'POST',body:JSON.stringify({consent:true})});
+      const t2=I18N[LANG]||I18N.es;
+      const poll=setInterval(()=>{
+        fetch('/api/volume/progress').then(r=>r.json()).then(p=>{
+          const box=el('volume-steps');const fp=(box.dataset.f||'').split(',');
+          const next=(p.steps||[]).map(x=>x.status);
+          if(fp.length!==next.length||fp.some((x,i)=>x!==next[i])){
+            box.innerHTML='';
+            for(const st of (p.steps||[])){
+              const li=document.createElement('li');li.className='step step-'+st.status;
+              const icon=document.createElement('span');icon.className='step-icon';
+              if(st.status==='running'){const sp=document.createElement('span');sp.className='spinner';icon.append(sp);}
+              else icon.textContent=st.status==='done'?'\u2713':'\u00B7';
+              const label=document.createElement('span');label.className='step-label';label.textContent=st.label;
+              const stat=document.createElement('span');stat.className='step-status';stat.textContent=st.status==='running'?t['running']:t[st.status]||st.status;
+              li.append(icon,label,stat);box.append(li);
+            }
+            box.dataset.f=next.join(',');
+          }
+          el('volume-bar').style.width=Math.max(6,Math.round(100*(p.done||0)/(p.total||4)))+'%';
+          el('volume-progress-count').textContent='Paso '+Math.min((p.done||0)+1,p.total||4)+' de '+(p.total||4);
+          if(!p.running){
+            clearInterval(poll);
+            if((p.done||0)===(p.total||4)&&p.total>0){
+              el('volume-progress-count').textContent=LANG==='es'?'\u2713 Volumen creado':'\u2713 Volume created';
+              el('volume-bar').style.width='100%';el('volume-bar').classList.remove('bar-run');
+              dot.className='dot dot-ok';
+              st.textContent=LANG==='es'?'Volumen LUKS montado — listo para la instalación':'LUKS volume mounted — ready';
+              el('to-install').hidden=false;
+            } else {
+              el('volume-progress-count').textContent=LANG==='es'?'Falló — mirá la consola':'Failed — check the console';
+              el('volume-bar').classList.add('bar-error');
+              el('volume-retry').hidden=false;
+            }
+          }
+        }).catch(()=>{});
+      },500);
+    };
+    if(v.state==='sealed'){
+      el('volume-progress-count').textContent=LANG==='es'?'Ya existe un volumen — eliminalo para crear de nuevo':'A volume already exists — delete it to create anew';
+      const cb=document.createElement('button');cb.className='btn btn-ghost btn-verify';cb.id='vcleanup';
+      cb.style.marginTop='10px';
+      cb.textContent=LANG==='es'?'Eliminar volumen de prueba':'Delete test volume';
+      cb.onclick=async()=>{cb.disabled=true;await fetch('/api/volume/cleanup',{method:'POST'});location.reload();};
+      el('volume-guide').append(cb);
+      return;
     }
+    el('volume-go').onclick=async()=>{
+      if(!confirm(LANG==='es'?'Se creará un volumen LUKS nuevo. La CONSOLA te va a pedir la frase de paso y un YES — escríbelos ahí y volvé a mirar el wizard. ¿Continuar?':'A new LUKS volume will be created. The CONSOLE will ask for the passphrase and a YES — type them there, then come back to the wizard. Continue?'))return;
+      VOLGO();
+    };
+    el('volume-retry').onclick=()=>location.reload();
   }).catch(()=>{});
   el('to-plan').disabled=BLOCKERS>0;
   // The plan rendered: step 2's Install button may now fire. (Lost in the

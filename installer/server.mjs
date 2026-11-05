@@ -18,7 +18,7 @@ const port = Number(args[args.indexOf("--port") + 1] || 7464);
 // reach the wizard through a container port mapping.
 const hostArg = args.indexOf("--host");
 const host = hostArg === -1 ? "127.0.0.1" : args[hostArg + 1] || "127.0.0.1";
-const installSh = process.env.AEGIS_INSTALLER_INSTALL_SH || "install.sh";
+const installSh = process.env.AEGIS_INSTALLER_INSTALL_SH || dirname(fileURLToPath(import.meta.url)) + "/../install.sh";
 const cookie = randomBytes(24).toString("hex");
 let log = "";
 const headers = {
@@ -170,6 +170,59 @@ createServer(async (req, res) => {
       ...volumeState(),
       provisioning: PROVISIONING().map((p) => ({ id: p.id, text: p[planLang(req.headers.cookie)] || p.en })),
     }), "application/json");
+  }
+  // T14: provision ALL steps sequentially, install-style: one POST, markers
+  // logged per step (the volume progress endpoint parses them), stdin
+  // inherited so cryptsetup/sudo prompt the user DIRECTLY on the console.
+  if (url.pathname === "/api/volume/provision-all" && req.method === "POST") {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", async () => {
+      let consent = false;
+      try { consent = JSON.parse(body || "{}").consent === true; } catch {}
+      if (log.includes("provision-all running")) return send(409, "already running");
+      log += "provision-all running\n";
+      send(202, "started");
+      const { img, mapper, mnt } = paths();
+      const steps = [
+        ["create-image", ["truncate", "-s", isTest() ? "64M" : "150G", img], false],
+        ["associate-loop", ["sudo", "losetup", "--find", "--show", img], false],
+        ["format-luks", ["sudo", "cryptsetup", "luksFormat", "<LOOP>"], true],
+        ["open-mount", ["sudo", "sh", "-c", `cryptsetup luksOpen $(sudo losetup -j ${img} --output NAME --noheadings | cut -d: -f1) ${mapper} && mkfs.ext4 /dev/mapper/${mapper} && mkdir -p ${mnt} && mount /dev/mapper/${mapper} ${mnt} && chown $(id -u):$(id -g) ${mnt}`], false],
+      ];
+      for (const [id, argv, destructive] of steps) {
+        if (destructive && !consent) { log += `[step] skipped ${id} (no consent)\n`; continue; }
+        log += `[step] started ${id}\n`;
+        const loop = (() => { try { return execFileSync("sudo", ["losetup", "-j", img, "--output", "NAME", "--noheadings"], { encoding: "utf8" }).split("\n")[0].trim(); } catch { return ""; } })();
+        const resolved = argv.map((a) => a === "" ? loop : a.replace("<LOOP>", loop || "<LOOP>")).filter(Boolean);
+        const child = spawn(resolved[0], resolved.slice(1), { stdio: ["inherit", "pipe", "pipe"] });
+        child.stdout?.on("data", (d) => (log += d));
+        child.stderr?.on("data", (d) => (log += d));
+        const code = await new Promise((res) => child.on("close", res));
+        log += `[step] finished ${id}\n`;
+        if (code !== 0) { log += `provision-all failed at ${id} (rc=${code})\n`; log += "provision-all done\n"; return; }
+      }
+      log += "provision-all done\n";
+    });
+    return;
+  }
+  // Volume progress: same marker protocol, volume step ids.
+  if (url.pathname === "/api/volume/progress") {
+    const VSTEPS = [
+      ["create-image", { es: "Crear la imagen", en: "Create the image" }],
+      ["associate-loop", { es: "Asociar el dispositivo loop", en: "Associate the loop device" }],
+      ["format-luks", { es: "Formatear LUKS (frase de paso en la consola)", en: "Format LUKS (passphrase on the console)" }],
+      ["open-mount", { es: "Abrir, formatear y montar", en: "Open, format and mount" }],
+    ];
+    const lang = planLang(req.headers.cookie);
+    const finishedIds = [...log.matchAll(/\[step\] (?:finished|skipped) ([a-z-]+)/g)].map((m) => m[1]);
+    const startedIds = [...log.matchAll(/\[step\] started ([a-z-]+)/g)].map((m) => m[1]);
+    const steps = VSTEPS.map(([id, l]) => ({
+      id, label: l[lang] || l.en,
+      status: finishedIds.includes(id) ? "done" : startedIds.includes(id) ? "running" : "pending",
+    }));
+    const done = steps.filter((x) => x.status === "done").length;
+    return send(200, JSON.stringify({ steps, done, total: steps.length, running: log.includes("provision-all running") && !log.includes("provision-all done") }), "application/json");
   }
   // T12 (S8): run a provisioning step FOR the client. stdio inherit means
   // cryptsetup/sudo prompt the user DIRECTLY in the installer console — the
