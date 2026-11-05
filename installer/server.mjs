@@ -5,6 +5,10 @@ import { createServer } from "node:http";
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { HTML, JS, CSS } from "./assets.mjs";
+import { collectPrereqs } from "./prereqs.cjs";
+import { writeFileSync } from "node:fs";
+import { dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const args = process.argv.slice(2);
 const port = Number(args[args.indexOf("--port") + 1] || 7464);
@@ -22,8 +26,21 @@ const plan = () => ({
     `bash ${installSh}   # download the latest signed aegis-cli release,`,
     "                   # verify it with cosign, then install into ~/bin",
   ],
+  prereqs: collectPrereqs(),
+  next: "after installing, run: aegis install <license-id>",
 });
-createServer((req, res) => {
+// T3: the telemetry opt-in chosen on the last screen is persisted next to
+// the server so the release tooling can read it. Default is off.
+const bundleDir = dirname(fileURLToPath(import.meta.url)) + "/";
+const writeTelemetryChoice = (optIn) => {
+  try {
+    writeFileSync(`${bundleDir}telemetry-choice.json`, JSON.stringify({ telemetry: optIn === true, at: new Date().toISOString() }));
+    return true;
+  } catch {
+    return false;
+  }
+};
+createServer(async (req, res) => {
   const url = new URL(req.url, "http://127.0.0.1");
   const send = (code, body, type = "text/plain") => {
     res.writeHead(code, { ...headers, "Content-Type": type });
@@ -42,6 +59,19 @@ createServer((req, res) => {
   if (url.pathname === "/api/log") return send(200, log);
   if (url.pathname === "/api/confirm" && req.method === "POST") {
     if (log) return send(409, "already started");
+    let telemetry = false;
+    try {
+      const body = await new Promise((resolve) => {
+        let d = "";
+        req.on("data", (c) => (d += c));
+        req.on("end", () => resolve(d));
+        req.on("error", () => resolve(""));
+      });
+      telemetry = JSON.parse(body || "{}").telemetry === true;
+    } catch {
+      return send(400, "bad body");
+    }
+    writeTelemetryChoice(telemetry);
     const child = spawn("bash", [installSh], { stdio: ["ignore", "pipe", "pipe"] });
     child.stdout.on("data", (d) => (log += d));
     child.stderr.on("data", (d) => (log += d));

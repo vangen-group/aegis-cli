@@ -48,3 +48,9 @@
   elegido: el de Gentleman-Programming/gentle-shell (zip + double-click +
   wizard web local + plan confirmado). El dueño mostró el banner ASCII VANGEN
   para el CLI — reuso decidido en client-redesign L5.
+- T2/T3 — hecho (commit en feat/install-wizard): installer/prereqs.cjs
+  detecta virtualización/WSL2 (win32) y /dev/kvm (linux), macOS sin checks,
+  runner inyectable (los tests nunca tocan la máquina real); el plan del
+  server incluye prereqs + "siguiente: aegis install <license-id>"; el wizard
+  muestra prereqs con hints y checkbox de telemetry opt-in (off por defecto);
+  /api/confirm persiste telemetry-choice.json. Tests 7/7.

@@ -88,13 +88,20 @@ test('the wizard server serves the plan, gates confirm behind the session, and r
             assert.equal(get('/', 'wrongcookie'), '403');
             assert.equal(get('/api/plan', cookie), '200');
             assert.equal(get('/nope', cookie), '404');
+            // T2: the plan carries the prerequisite checks.
+            const plan0 = JSON.parse(spawnSync('curl', ['-s', '-H', `Cookie: aegis_install=${cookie}`, base + '/api/plan'], { encoding: 'utf8' }).stdout);
+            assert.ok(Array.isArray(plan0.prereqs), 'the plan must include the prereq checks');
+            assert.ok(typeof plan0.next === 'string' && plan0.next.includes('aegis install'), 'the plan must name the next journey (T3)');
 
             const plan = JSON.parse(spawnSync('curl', ['-s', '-H', `Cookie: aegis_install=${cookie}`, base + '/api/plan'], { encoding: 'utf8' }).stdout);
             assert.ok(plan.steps.some((s) => s.includes('install.sh')), 'the plan must name the real install.sh invocation');
 
-            // Confirm with the session starts the stub install; its output lands in the log.
-            const confirm = spawnSync('curl', ['-s', '-X', 'POST', '-H', `Cookie: aegis_install=${cookie}`, '-o', '/dev/null', '-w', '%{http_code}', base + '/api/confirm'], { encoding: 'utf8' });
+            // Confirm with the session + telemetry choice starts the stub install.
+            const confirm = spawnSync('curl', ['-s', '-X', 'POST', '-H', `Cookie: aegis_install=${cookie}`, '-d', '{"telemetry":true}', '-o', '/dev/null', '-w', '%{http_code}', base + '/api/confirm'], { encoding: 'utf8' });
             assert.equal(confirm.stdout.trim(), '202');
+            // T3: the opt-in is persisted next to the server (bundle dir).
+            const choice = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'installer', 'telemetry-choice.json'), 'utf8'));
+            assert.equal(choice.telemetry, true);
             let log = '';
             for (let i = 0; i < 60 && !log.includes('INSTALL-FINISHED'); i++) {
                 await new Promise((r) => setTimeout(r, 50));
