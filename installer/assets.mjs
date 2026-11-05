@@ -118,7 +118,8 @@ export const HTML = `<!doctype html><html lang="en"><head><meta charset="utf-8">
 </footer>
 <script src="/wizard.js"></script></body></html>`;
 export const JS = `const el=(id)=>document.getElementById(id);
-const WORD={ok:'available',missing:'missing',unknown:'unknown',info:'present'};
+const WORD={ok:{es:'disponible',en:'available'},missing:{es:'falta',en:'missing'},unknown:{es:'desconocido',en:'unknown'},info:{es:'',en:''}};
+const wordFor=(q,lang)=>{const w=WORD[q.state];return typeof w==='object'?(w[lang]||w.en):'';};
 let BLOCKERS=0;
 function go(stage){
   document.querySelectorAll('.stage').forEach(s=>{
@@ -218,8 +219,9 @@ fetch('/api/plan').then(r=>r.json()).then(p=>{
     const li=document.createElement('li');li.className='prereq';
     const dot=document.createElement('span');dot.className='dot dot-'+q.state;
     const text=document.createElement('span');
+    const wl=window.__aegisLang||'es';
     text.innerHTML='<strong>'+q.label+'</strong>'+
-      (q.state==='info'?'':' — <span class="state state-'+q.state+'">'+(WORD[q.state]||q.state)+'</span>')+
+      (q.state==='info'?'':' — <span class="state state-'+q.state+'">'+wordFor(q,wl)+'</span>')+
       (q.state==='ok'||q.state==='info'?'':'<small class="hint">'+q.hint+'</small>');
     li.append(dot,text);el('prereqs').append(li);
   }
