@@ -41,6 +41,14 @@ export const HTML = `<!doctype html><html lang="en"><head><meta charset="utf-8">
       <div class="panel-actions">
         <button id="to-plan" class="btn btn-primary" disabled data-i18n="review">Ver el plan</button>
       </div>
+      <section class="card-optin" id="volume-card" aria-labelledby="volume-title">
+        <h2 id="volume-title" data-i18n="vol-title">Volumen seguro LUKS</h2>
+        <p class="prereq"><span class="dot dot-unknown" id="volume-dot"></span><span id="volume-state">Consultando el volumen…</span></p>
+        <div id="volume-guide" hidden>
+          <p class="hint" data-i18n="vol-guide-hint">Tu volumen LUKS todavía no existe. Aprovisionalo con estos pasos (en tu terminal — la frase de paso se escribe SOLO en el prompt de cryptsetup) y verificá cada uno:</p>
+          <ol id="volume-steps" class="steps"></ol>
+        </div>
+      </section>
     </section>
 
     <section class="panel" id="card-plan" aria-labelledby="plan-title" hidden>
@@ -210,6 +218,34 @@ fetch('/api/plan').then(r=>r.json()).then(p=>{
   if(!(p.prereqs||[]).length)el('prereqs').innerHTML='<li class="prereq"><span class="dot dot-ok"></span><span><strong>All good — nothing else is needed on this platform.</strong></span></li>';
   window.__aegisLang=p.lang||'es';
   applyLang(window.__aegisLang);
+  // T4: LUKS volume state — detected, never toggled. When missing, show the
+  // provisioning guide with a read-only verify button per step.
+  const LANG=window.__aegisLang;
+  const VOL={es:{missing:'Volumen LUKS inexistente — todavía no está aprovisionado',sealed:'Volumen LUKS sellado (por diseño entre sesiones) — ejecutá ~/mount-aegis.sh cuando lo necesites',mounted:'Volumen LUKS montado en /mnt/aegis_secure',verify:'Verificar',ok:'verificado',fail:'falló',guide:'Tu volumen LUKS todavía no existe. Aprovisionalo con estos pasos (en tu terminal — la frase de paso se escribe SOLO en el prompt de cryptsetup) y verificá cada uno:'},
+             en:{missing:'LUKS volume missing — not provisioned yet',sealed:'LUKS volume sealed (by design between sessions) — run ~/mount-aegis.sh when you need it',mounted:'LUKS volume mounted at /mnt/aegis_secure',verify:'Verify',ok:'verified',fail:'failed',guide:'Your LUKS volume does not exist yet. Provision it with these steps (in your terminal — the passphrase is typed ONLY at the cryptsetup prompt) and verify each one:'}};
+  fetch('/api/volume/state').then(r=>r.json()).then(v=>{
+    const t=VOL[LANG]||VOL.es;
+    const dot=el('volume-dot'), st=el('volume-state');
+    dot.className='dot '+(v.state==='mounted'?'dot-ok':v.state==='sealed'?'dot-unknown':'dot-missing');
+    st.textContent=t[v.state]||v.state;
+    if(v.state!=='missing')return;
+    el('volume-guide').hidden=false;
+    el('volume-guide').querySelector('[data-i18n=vol-guide-hint]').textContent=t.guide;
+    const box=el('volume-steps');box.innerHTML='';
+    for(const p of v.provisioning||[]){
+      const li=document.createElement('li');li.className='step';
+      const label=document.createElement('span');label.className='step-label';label.textContent=p.text;
+      const btn=document.createElement('button');btn.className='btn btn-ghost btn-verify';btn.textContent=t.verify;
+      const stat=document.createElement('span');stat.className='step-status';
+      btn.onclick=async()=>{
+        btn.disabled=true;stat.textContent='…';
+        const r=await fetch('/api/volume/verify',{method:'POST',body:JSON.stringify({step:p.id})}).then(x=>x.json()).catch(()=>({ok:false}));
+        stat.textContent=r.ok?t.ok:t.fail;
+        stat.className='step-status '+(r.ok?'state-ok':'state-missing');
+      };
+      li.append(label,btn,stat);box.append(li);
+    }
+  }).catch(()=>{});
   el('to-plan').disabled=BLOCKERS>0;
   // The plan rendered: step 2's Install button may now fire. (Lost in the
   // staged-UI rewrite: confirm started disabled and nothing re-enabled it.)
@@ -302,6 +338,10 @@ h1{margin:0 0 8px;font-size:clamp(1.5rem,3vw,2rem);letter-spacing:-.02em}
 .panel-actions{display:flex;align-items:center;gap:14px}
 .card-optin{padding:14px 16px;margin:0 0 18px;border:1px solid var(--border);border-radius:var(--radius);
   background:var(--surface-1)}
+#volume-card{margin-top:16px;margin-bottom:0}
+#volume-title{font-size:.8rem;margin-bottom:10px}
+.btn-verify{padding:6px 14px;font-size:.8rem}
+.step .step-label{font-size:.85rem}
 .optin{display:flex;gap:12px;cursor:pointer}
 .optin input{width:18px;height:18px;accent-color:var(--accent-strong);margin-top:3px;flex:none}
 .optin-body strong{display:block;font-size:.92rem}
