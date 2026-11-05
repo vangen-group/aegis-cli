@@ -2,11 +2,11 @@
 // Fixed route allowlist; the browser never sends commands or paths — the
 // plan is built here and only a confirm POST starts install.sh here.
 import { createServer } from "node:http";
-import { spawn } from "node:child_process";
+import { spawn, execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { HTML, JS, CSS } from "./assets.mjs";
 import { collectPrereqs } from "./prereqs.cjs";
-import { volumeState, verifyStep, PROVISIONING } from "./volume.cjs";
+import { volumeState, verifyStep, PROVISIONING, paths } from "./volume.cjs";
 import { runStep, cleanupTestVolume, isTest } from "./provision.cjs";
 import { writeFileSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
@@ -182,8 +182,18 @@ createServer(async (req, res) => {
       try { const b = JSON.parse(body || "{}"); step = b.step || ""; consent = b.consent === true; } catch {}
       // stdin inherited (cryptsetup/sudo prompts are answered on the TTY),
       // stdout/stderr piped so the browser console dock shows the progress.
+      // T13 fix: the loop device only exists AFTER associate-loop runs —
+      // resolve it live instead of using the <LOOP> placeholder.
+      let env = process.env;
+      if (step === "format-luks" || step === "open-mount") {
+        try {
+          const { img } = paths();
+          const loop = execFileSync("sudo", ["losetup", "-j", img, "--output", "NAME", "--noheadings"], { encoding: "utf8" }).split("\n")[0].trim();
+          if (loop) env = { ...process.env, AEGIS_VOLUME_LOOP: loop };
+        } catch {}
+      }
       const r = runStep(step, { consent, spawnFn: (argv, opts) => {
-        const child = spawn(argv[0], argv.slice(1), { stdio: ["inherit", "pipe", "pipe"] });
+        const child = spawn(argv[0], argv.slice(1), { stdio: ["inherit", "pipe", "pipe"], env });
         child.stdout?.on("data", (d) => (log += d));
         child.stderr?.on("data", (d) => (log += d));
         child.on("close", (code) => (log += `[step] ${step} exit ${code}\n`));
