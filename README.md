@@ -40,6 +40,19 @@ aegis update
 aegis --version
 ```
 
+### Installation without a terminal (the double-click wizard)
+
+Download **`aegis-installer-windows.zip`** (or the macOS one) from
+[Releases](https://github.com/vangen-group/aegis-cli/releases/latest), extract,
+and double-click **Install Aegis CLI**. A local wizard opens in your browser
+(127.0.0.1 only): it checks your machine's prerequisites, shows the exact
+steps it will run, and installs only after you confirm. On Windows everything
+is installed inside your WSL2 Ubuntu environment — nothing stays on the host.
+The installer is bilingual (Spanish default; **EN/ES** toggle in the top bar)
+and resumes from the last completed step if a run gets interrupted. The
+wizard bundles the same verified `install.sh` — every signature check still
+applies. UI language: Spanish by default, English via the toggle.
+
 > `bin/aegis` and `config/license-keys.json` are synced into this repo from
 > aegis-workstation by CI (`sync-launcher.yml`); never hand-edit them here.
 > See [`docs/INTEGRATION.md`](docs/INTEGRATION.md).
