@@ -12,6 +12,10 @@ import { fileURLToPath } from "node:url";
 
 const args = process.argv.slice(2);
 const port = Number(args[args.indexOf("--port") + 1] || 7464);
+// Loopback by default (S6). A dev environment may pass --host 0.0.0.0 to
+// reach the wizard through a container port mapping.
+const hostArg = args.indexOf("--host");
+const host = hostArg === -1 ? "127.0.0.1" : args[hostArg + 1] || "127.0.0.1";
 const installSh = process.env.AEGIS_INSTALLER_INSTALL_SH || "install.sh";
 const cookie = randomBytes(24).toString("hex");
 let log = "";
@@ -80,4 +84,4 @@ createServer(async (req, res) => {
     return send(202, "started");
   }
   send(404, "not found");
-}).listen(port, "127.0.0.1", () => console.log(`wizard ready: http://127.0.0.1:${port}`));
+}).listen(port, host, () => console.log(`wizard ready: http://${host === "0.0.0.0" ? "127.0.0.1" : host}:${port}`));
