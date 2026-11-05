@@ -189,7 +189,12 @@ createServer(async (req, res) => {
         try {
           const { img } = paths();
           const loop = execFileSync("sudo", ["losetup", "-j", img, "--output", "NAME", "--noheadings"], { encoding: "utf8" }).split("\n")[0].trim();
-          if (loop) env = { ...process.env, AEGIS_VOLUME_LOOP: loop };
+          if (loop) {
+            // The argv is built from this env (provision.cjs commandsFor),
+            // so it must be set on the process, not just the child.
+            process.env.AEGIS_VOLUME_LOOP = loop;
+            env = { ...process.env, AEGIS_VOLUME_LOOP: loop };
+          }
         } catch {}
       }
       const r = runStep(step, { consent, spawnFn: (argv, opts) => {
