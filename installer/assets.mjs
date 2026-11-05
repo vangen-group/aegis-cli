@@ -296,19 +296,24 @@ fetch('/api/plan').then(r=>r.json()).then(p=>{
           // the browser. Ask consent for the destructive step.
           if(p.id==='format-luks'&&!confirm(LANG==='es'?'⚠️ DESTRUCTIVO: se formateará el volumen con LUKS. Sin la frase de paso los datos son irrecuperables por diseño. ¿Continuar?':'⚠️ DESTRUCTIVE: the volume will be LUKS-formatted. Without the passphrase data is unrecoverable by design. Continue?')){btn.disabled=false;stat.textContent='';return;}
           const r=await fetch('/api/volume/provision',{method:'POST',body:JSON.stringify({step:p.id,consent:p.id==='format-luks'})}).then(x=>x.json()).catch(()=>({error:'x'}));
-          if(r.started===true){stat.textContent=LANG==='es'?'mirá la consola — confirmá ahí y volvé a verificar':'watch the console — confirm there, then verify';
+          if(r.started===true){stat.textContent=LANG==='es'?'corriendo… mirá la consola':'running… watch the console';
             stat.className='step-status state-unknown';
             const vb=document.createElement('button');vb.className='btn btn-ghost btn-verify';vb.textContent=t.verify;
             vb.onclick=async()=>{vb.disabled=true;
               const v2=await fetch('/api/volume/verify',{method:'POST',body:JSON.stringify({step:p.id})}).then(x=>x.json()).catch(()=>({ok:false}));
-              stat.textContent=v2.ok?t.ok:t.fail;stat.className='step-status '+(v2.ok?'state-ok':'state-missing');};
+              if(v2.ok){ // UX: done state — green card, no button, 'listo'
+                li.classList.add('vstep-done');btn.hidden=true;vb.hidden=true;
+                stat.textContent='\u2713 '+(LANG==='es'?'listo':'done');stat.className='step-status state-ok';
+              } else {vb.disabled=false;stat.textContent=t.fail;stat.className='step-status state-missing';}
+            };
             li.append(vb);
           } else {stat.textContent=r.error||t.fail;stat.className='step-status state-missing';btn.disabled=false;}
           return;
         }
         const r=await fetch('/api/volume/verify',{method:'POST',body:JSON.stringify({step:p.id})}).then(x=>x.json()).catch(()=>({ok:false}));
-        stat.textContent=r.ok?t.ok:t.fail;
-        stat.className='step-status '+(r.ok?'state-ok':'state-missing');
+        if(r.ok){li.classList.add('vstep-done');btn.hidden=true;
+          stat.textContent='\u2713 '+(LANG==='es'?'listo':'done');stat.className='step-status state-ok';}
+        else {stat.textContent=t.fail;stat.className='step-status state-missing';btn.disabled=false;}
       };
       wrap.append(label,btn,stat);li.append(num,wrap);box.append(li);
     }
@@ -430,6 +435,8 @@ h1{margin:0 0 10px;font-size:clamp(1.6rem,3.2vw,2.15rem);letter-spacing:-.02em}
 .vstep-body{min-width:0;display:flex;flex-direction:column;gap:10px}
 .vstep .step-label{font-size:.88rem;line-height:1.55;white-space:normal}
 .vstep .btn-verify{align-self:flex-start}
+.vstep-done{border-color:#34d39955;background:#34d3990d}
+.vstep-done .step-label{color:var(--text-muted)}
 .vstep .step-status{font:600 11px/1.4 var(--font-mono)}
 #card-volume .lead{max-width:none}
 #volume-card{margin-top:16px;margin-bottom:0}
