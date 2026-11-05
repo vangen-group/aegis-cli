@@ -7,13 +7,12 @@
 # Bash's bash.exe — they must never duplicate any logic from here.
 #
 # Locating the stack: AEGIS_WORKSTATION_DIR must point at the folder that
-# contains this workstation's .devcontainer/. Every real invocation runs in
-# client mode (AEGIS_CLI_MODE defaults to "client", see below) and resolves
-# this from the signed bundle `aegis install` places in AEGIS_INSTALL_DIR —
-# there is no baked-in checkout path, on any drive letter, for a client to
-# fall back to. AEGIS_REPO_WORKSTATION_DIR is a dev-only override
-# (AEGIS_CLI_MODE=dev) for whoever is developing this repository itself; it
-# has no default and must be set explicitly.
+# contains this workstation's .devcontainer/. It resolves from the signed
+# bundle `aegis install` places in AEGIS_INSTALL_DIR — there is no baked-in
+# checkout path, on any drive letter, to fall back to (2026-11-04: the
+# AEGIS_CLI_MODE=dev checkout override this comment used to describe is
+# retired — every real invocation, including the owner's own machine, is
+# what used to be called "client mode").
 #
 # Usage: aegis <command> [args...]
 #   up                     Download the licensed image from the registry, verify
@@ -87,12 +86,12 @@
 #                          for this stack's containers.
 #   audit                  Run scripts/audit-container.sh against the dev
 #                          container and propagate its exit code.
-#   backup [--dest <dir>]  Snapshot the memories/code/engram volumes into one
+#   backup [--dest <dir>]  Snapshot the code/engram volumes into one
 #                          timestamped .tar.gz (default dest: C:/Aegis/backups)
 #                          via a throwaway, network-less container. Prints
 #                          the archive path, size and sha256, and writes a
 #                          secret-free *.manifest.json next to it.
-#   restore <archive> [--only memories|code|engram] [--replace] [--force]
+#   restore <archive> [--only code|engram] [--replace] [--force]
 #                          Restore a backup archive into the named volumes
 #                          via a throwaway, network-less container. Refuses
 #                          while the stack is running unless --force (run
@@ -101,22 +100,22 @@
 #                          found next to it. Default merges without
 #                          overwriting existing files; --replace overwrites.
 #   export <path> [--dest <dir>]
-#                          Copy a file/dir from inside /workspace/memories or
-#                          /workspace/code out to the host (default dest:
+#                          Copy a file/dir from inside /workspace/code out to
+#                          the host (default dest:
 #                          C:/Aegis/exports) — the one explicit, user-driven
 #                          host channel this template still allows.
 #   import <host-path> <path>
-#                          Copy a host file/dir INTO /workspace/memories or
-#                          /workspace/code. <path> is validated the same way
+#                          Copy a host file/dir INTO /workspace/code. <path> is
+#                          validated the same way
 #                          as `shell`/`export` (relative, no "..", no symlink
 #                          escape).
-#   build windows <memories|code>/<path>/<file>.iss
+#   build windows <code>/<path>/<file>.iss
 #                          Compile an Inno Setup script into a Windows installer
 #                          in a throwaway container (Wine + official Inno Setup,
 #                          image aegis-build-windows, built locally on first
 #                          use): --network none, read-only rootfs, uid 1000, no
 #                          capabilities, and ONLY the project root
-#                          (code/<Cliente>/<repo> or memories/<proyecto>)
+#                          (code/<Cliente>/<repo>)
 #                          mounted via volume-subpath (Docker Engine 26+). The
 #                          .exe lands in Output/ next to the .iss, inside the
 #                          volume; take it out with `aegis export` (T25).
@@ -127,11 +126,7 @@
 #   AEGIS_WORKSTATION_DIR   Folder containing .devcontainer/docker-compose.yml
 #                           for this workstation. No default of its own: an
 #                           explicit value always wins, otherwise the copy
-#                           `aegis install` placed in AEGIS_INSTALL_DIR,
-#                           otherwise (AEGIS_CLI_MODE=dev only)
-#                           AEGIS_REPO_WORKSTATION_DIR. A client has neither a
-#                           checkout nor dev mode, so it always resolves
-#                           through AEGIS_INSTALL_DIR.
+#                           `aegis install` placed in AEGIS_INSTALL_DIR.
 #   AEGIS_SERVICES_NETWORK  Default network name for `aegis connect`.
 #   GH_TOKEN, ANTHROPIC_API_KEY, GIT_AUTHOR_*, GIT_COMMITTER_*
 #                           Forwarded into the container ONLY via
@@ -162,32 +157,25 @@
 #                           $HOME/.aegis/workstation. When it exists, `aegis up`
 #                           and `aegis audit` run that copy instead of the
 #                           repository's (T18).
-#   AEGIS_INSTALL_SOURCE    Folder `aegis install` copies FROM. Default: the
-#                           repository's templates/workstation, see
-#                           AEGIS_REPO_WORKSTATION_DIR below.
-#   AEGIS_INSTALL_URL       Client install source: a .tar.gz whose entries are
-#                           the repo-relative paths in client-bundle.txt, so
+#   AEGIS_INSTALL_SOURCE    Folder `aegis install` copies FROM. Default: fetched
+#                           from AEGIS_INSTALL_URL or the registry bundle, below.
+#   AEGIS_INSTALL_URL       Install source: a .tar.gz whose entries are the
+#                           repo-relative paths in client-bundle.txt, so
 #                           extraction yields templates/workstation/... and
-#                           templates/sandbox/.... Used by `aegis install` in
-#                           client mode when there is no checkout.
+#                           templates/sandbox/.... Used by `aegis install` when
+#                           set, instead of the registry bundle.
 #   AEGIS_INSTALL_SHA256    Expected sha256 of the AEGIS_INSTALL_URL archive.
 #                           When unset, <url>.sha256 is fetched instead; either
-#                           way client mode fails closed without a hash.
-#   AEGIS_BUNDLE_REPO       Registry repository of the client BUNDLE image, the
-#                           DEFAULT client install source when neither --from/
+#                           way install fails closed without a hash.
+#   AEGIS_BUNDLE_REPO       Registry repository of the BUNDLE image, the
+#                           DEFAULT install source when neither --from/
 #                           AEGIS_INSTALL_SOURCE nor AEGIS_INSTALL_URL is set.
 #                           The image's filesystem carries the bundle tarball at
 #                           /bundle.tar.gz. Default: ${AEGIS_IMAGE_REPO}-bundle.
 #   AEGIS_BUNDLE_TAG        Tag of that bundle image. Default: latest.
-#   AEGIS_REPO_WORKSTATION_DIR
-#                           Where a checkout of this repository keeps the
-#                           template. No default; only consulted in
-#                           AEGIS_CLI_MODE=dev, for developing this repository
-#                           itself. A client never sets this.
 #   AEGIS_SANDBOX_DIR       Folder containing the sandbox .devcontainer/.
 #                           Priority, like AEGIS_WORKSTATION_DIR: this explicit
-#                           value > an installed copy (AEGIS_SANDBOX_INSTALL_DIR)
-#                           > the repository (AEGIS_REPO_SANDBOX_DIR).
+#                           value > an installed copy (AEGIS_SANDBOX_INSTALL_DIR).
 #   AEGIS_SANDBOX_INSTALL_DIR
 #                           Where `aegis install` puts the sandbox configuration
 #                           (T10), OUTSIDE every mount like AEGIS_INSTALL_DIR.
@@ -198,25 +186,17 @@
 #                           the owner's state into a `.bak` on every install.
 #   AEGIS_INSTALL_SANDBOX_SOURCE
 #                           Folder `aegis install` copies the sandbox FROM.
-#                           Default: AEGIS_REPO_SANDBOX_DIR. Like the
-#                           workstation source, a host with no checkout simply
-#                           has no sandbox source and `install` skips it.
-#   AEGIS_REPO_SANDBOX_DIR  Where the repository keeps the sandbox template.
-#                           Default: alongside AEGIS_REPO_WORKSTATION_DIR
-#                           (.../templates/sandbox).
+#                           Default: next to the fetched bundle's workstation
+#                           folder.
 #   AEGIS_BUILD_WINDOWS_DIR Folder holding the build-windows Dockerfile (T25).
 #                           Priority: this explicit value > an installed copy
-#                           (AEGIS_BUILD_WINDOWS_INSTALL_DIR) > the repository
-#                           (AEGIS_REPO_BUILD_WINDOWS_DIR).
+#                           (AEGIS_BUILD_WINDOWS_INSTALL_DIR).
 #   AEGIS_BUILD_WINDOWS_INSTALL_DIR
 #                           Where `aegis install` puts it, OUTSIDE every mount.
 #                           Default: $HOME/.aegis/build-windows-install.
 #   AEGIS_INSTALL_BUILD_WINDOWS_SOURCE
 #                           Folder `aegis install` copies it FROM. Default:
-#                           AEGIS_REPO_BUILD_WINDOWS_DIR.
-#   AEGIS_REPO_BUILD_WINDOWS_DIR
-#                           Where the repository keeps it. Default: alongside
-#                           AEGIS_REPO_WORKSTATION_DIR (.../templates/build-windows).
+#                           next to the fetched bundle's workstation folder.
 #   AEGIS_SANDBOX_RUNTIME   OCI runtime for the sandbox container. Default: runc.
 #                           `aegis sandbox --gvisor` sets it to runsc, but only
 #                           after a fail-closed preflight proves this daemon has
@@ -242,10 +222,10 @@
 #   AEGIS_PROFILE_STORE_PATH
 #                           T38: container-side path where `aegis profile use`
 #                           stores the chosen OpenCode provider profile — the
-#                           memories data volume, which survives a home/
+#                           code data volume, which survives a home/
 #                           opencode-config recreation and rides `aegis
 #                           backup` (docs/10-workstation.md section 12).
-#                           Default: /workspace/memories/.aegis/profile.json.
+#                           Default: /workspace/code/.aegis/profile.json.
 #                           Tests point it at a scratch path.
 #   AEGIS_PROFILES_DIR      Container folder a bare profile NAME resolves
 #                           against (`<name>.json`). Default:
@@ -273,34 +253,22 @@ set -euo pipefail
 # into AEGIS_INSTALL_DIR, which is not mounted anywhere (not even read-only) —
 # and from then on the launcher prefers that copy over the repository.
 AEGIS_INSTALL_DIR="${AEGIS_INSTALL_DIR:-$HOME/.aegis/workstation}"
-# No default: only a developer of this repository itself, running in
-# AEGIS_CLI_MODE=dev, sets this. A client has no checkout to point at.
-AEGIS_REPO_WORKSTATION_DIR="${AEGIS_REPO_WORKSTATION_DIR:-}"
-# OD1.2: the client install source, used only when no checkout/--from is given.
-# Kept as data (empty by default) so a build without a published channel refuses
+# OD1.2: the client install source, used only when no --from is given. Kept as
+# data (empty by default) so a build without a published channel refuses
 # instead of guessing, and tests can point it at a local file:// bundle.
 AEGIS_INSTALL_URL="${AEGIS_INSTALL_URL:-}"
 AEGIS_INSTALL_SHA256="${AEGIS_INSTALL_SHA256:-}"
 
-# Priority: an explicit AEGIS_WORKSTATION_DIR always wins (development, tests,
-# other checkouts); otherwise the installed copy if there is one; otherwise,
-# ONLY in AEGIS_CLI_MODE=dev, an explicitly-set checkout. AEGIS_CLI_MODE
-# defaults to "client" below, read here inline (it is not resolved yet at this
-# point in the script) because every real invocation — including the owner's
-# own machine — runs as a client with no checkout to fall back to; defaulting
-# this to a developer's local path would leak it into a client's output
-# (see the version-missing warning below, which reads AEGIS_WORKSTATION_DIR).
+# Priority: an explicit AEGIS_WORKSTATION_DIR always wins (tests, a deliberate
+# override); otherwise the installed copy if there is one; otherwise report
+# the destination `aegis install` will use, never a path nothing on this
+# machine has.
 if [[ -n "${AEGIS_WORKSTATION_DIR:-}" ]]; then
     AEGIS_CONFIG_SOURCE="explicit (AEGIS_WORKSTATION_DIR)"
 elif [[ -f "${AEGIS_INSTALL_DIR%/}/.devcontainer/docker-compose.yml" ]]; then
     AEGIS_WORKSTATION_DIR="${AEGIS_INSTALL_DIR%/}"
     AEGIS_CONFIG_SOURCE="installed"
-elif [[ "${AEGIS_CLI_MODE:-client}" != "client" && -n "${AEGIS_REPO_WORKSTATION_DIR:-}" ]]; then
-    AEGIS_WORKSTATION_DIR="${AEGIS_REPO_WORKSTATION_DIR}"
-    AEGIS_CONFIG_SOURCE="repository"
 else
-    # Not installed yet (and no dev checkout applies): report the destination
-    # `aegis install` will use, never a path nothing on this machine has.
     AEGIS_WORKSTATION_DIR="${AEGIS_INSTALL_DIR%/}"
     AEGIS_CONFIG_SOURCE="not installed"
 fi
@@ -332,8 +300,8 @@ DEFAULT_SERVICES_NETWORK="${AEGIS_SERVICES_NETWORK:-aegis-services}"
 # from templates/sandbox/config/allowlist.txt. It deliberately does NOT reuse
 # COMPOSE_FILE/DEV_CONTAINER
 # above: those are bound to the workstation stack and sharing them would let one
-# command tear down the other. Same three-way priority as the workstation (an
-# explicit AEGIS_SANDBOX_DIR wins, then the installed copy, then the repository).
+# command tear down the other. Same priority as the workstation (an explicit
+# AEGIS_SANDBOX_DIR wins, then the installed copy).
 #
 # T10: the installed copy is what the host RUNS, so it must live outside every
 # mount — the sandbox repo itself is mounted READ-WRITE and is untrusted, so a
@@ -343,16 +311,12 @@ DEFAULT_SERVICES_NETWORK="${AEGIS_SERVICES_NETWORK:-aegis-services}"
 # file, T8), and `aegis install` replaces its destination with a backup, so
 # sharing it would move the owner's state aside on every install/update.
 AEGIS_SANDBOX_INSTALL_DIR="${AEGIS_SANDBOX_INSTALL_DIR:-$HOME/.aegis/sandbox-install}"
-AEGIS_REPO_SANDBOX_DIR="${AEGIS_REPO_SANDBOX_DIR:-${AEGIS_REPO_WORKSTATION_DIR%/}/../sandbox}"
 
 if [[ -n "${AEGIS_SANDBOX_DIR:-}" ]]; then
     AEGIS_SANDBOX_SOURCE="explicit (AEGIS_SANDBOX_DIR)"
 elif [[ -f "${AEGIS_SANDBOX_INSTALL_DIR%/}/.devcontainer/docker-compose.yml" ]]; then
     AEGIS_SANDBOX_DIR="${AEGIS_SANDBOX_INSTALL_DIR%/}"
     AEGIS_SANDBOX_SOURCE="installed"
-elif [[ "${AEGIS_CLI_MODE:-client}" != "client" && -n "${AEGIS_REPO_WORKSTATION_DIR:-}" ]]; then
-    AEGIS_SANDBOX_DIR="${AEGIS_REPO_SANDBOX_DIR}"
-    AEGIS_SANDBOX_SOURCE="repository"
 else
     AEGIS_SANDBOX_DIR="${AEGIS_SANDBOX_INSTALL_DIR%/}"
     AEGIS_SANDBOX_SOURCE="not installed"
@@ -363,21 +327,16 @@ SANDBOX_SERVICE="dev"
 
 # --- T25: `aegis build windows` (Inno Setup under Wine, a throwaway container) ---
 # The host BUILDS this image (`docker build` of templates/build-windows), so its
-# Dockerfile is configuration the host executes: same three-way priority and the
-# same T18/T10 reasoning as the sandbox template — an explicit
-# AEGIS_BUILD_WINDOWS_DIR wins, then the copy `aegis install` puts OUTSIDE every
-# mount, then the repository.
+# Dockerfile is configuration the host executes: same priority and the same
+# T18/T10 reasoning as the sandbox template — an explicit AEGIS_BUILD_WINDOWS_DIR
+# wins, then the copy `aegis install` puts OUTSIDE every mount.
 AEGIS_BUILD_WINDOWS_INSTALL_DIR="${AEGIS_BUILD_WINDOWS_INSTALL_DIR:-$HOME/.aegis/build-windows-install}"
-AEGIS_REPO_BUILD_WINDOWS_DIR="${AEGIS_REPO_BUILD_WINDOWS_DIR:-${AEGIS_REPO_WORKSTATION_DIR%/}/../build-windows}"
 
 if [[ -n "${AEGIS_BUILD_WINDOWS_DIR:-}" ]]; then
     AEGIS_BUILD_WINDOWS_SOURCE="explicit (AEGIS_BUILD_WINDOWS_DIR)"
 elif [[ -f "${AEGIS_BUILD_WINDOWS_INSTALL_DIR%/}/Dockerfile" ]]; then
     AEGIS_BUILD_WINDOWS_DIR="${AEGIS_BUILD_WINDOWS_INSTALL_DIR%/}"
     AEGIS_BUILD_WINDOWS_SOURCE="installed"
-elif [[ "${AEGIS_CLI_MODE:-client}" != "client" && -n "${AEGIS_REPO_WORKSTATION_DIR:-}" ]]; then
-    AEGIS_BUILD_WINDOWS_DIR="${AEGIS_REPO_BUILD_WINDOWS_DIR}"
-    AEGIS_BUILD_WINDOWS_SOURCE="repository"
 else
     AEGIS_BUILD_WINDOWS_DIR="${AEGIS_BUILD_WINDOWS_INSTALL_DIR%/}"
     AEGIS_BUILD_WINDOWS_SOURCE="not installed"
@@ -388,12 +347,13 @@ BUILD_WINDOWS_IMAGE_REPO="aegis-build-windows"
 BUILD_WINDOWS_MIN_ENGINE=26
 
 # --- T20: backup/restore/export/import ------------------------------------
-# See docker-compose.yml's "memories-data"/"code-data" volumes and
+# See docker-compose.yml's single "code-data" volume and
 # docs/10-workstation.md, section 4/17, docs/11-aegis-cli.md for the full
 # design. Named volumes this stack owns; NEVER touched: the home/config
 # volumes below hold real Claude/OpenCode sessions and gentle-ai config and
 # must never be included in a backup or exposed to a throwaway container.
-VOL_MEMORIES="aegis-workstation-memories"
+# single-code-volume (2026-11-04): the memories volume is gone; the single
+# code volume mounts at /workspace and keeps the repos under code/ inside it.
 VOL_CODE="aegis-workstation-code"
 VOL_ENGRAM="aegis-workstation-engram-data"
 
@@ -421,9 +381,9 @@ SECRET_ENV_ARGS=(-e GH_TOKEN -e ANTHROPIC_API_KEY -e GIT_AUTHOR_NAME
 AEGIS_SANDBOX_ALLOWED_ENVS_FILE="${AEGIS_SANDBOX_ALLOWED_ENVS_FILE:-$HOME/.aegis/sandbox/allowed-envs}"
 
 # ---------------------------------------------------------------------------
-# The spelling the user typed (`license` or its alias `account`): the shared
-# license messages name it back, so neither entrypoint reports a command the
-# user never ran. cmd_account switches it to "account".
+# The spelling the user typed: the shared license messages name it back. Set
+# here only as a safe default; the dispatcher sets it to the spelling the
+# user typed (`license` primary, `account` alias) before anything reads it.
 _LICENSE_CMD="license"
 
 # S2: set ONLY by pull_and_verify_published_image, to the digest reference
@@ -439,19 +399,19 @@ AEGIS_VERIFIED_BASE_REF=""
 # found next to bin/aegis regardless of AEGIS_WORKSTATION_DIR/cwd.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LICENSE_JS="${SCRIPT_DIR%/}/aegis-license.js"
-ACTIVATE_JS="${SCRIPT_DIR%/}/aegis-activate.js"
+ACTIVATE_JS="${AEGIS_ACTIVATE_JS:-${SCRIPT_DIR%/}/aegis-activate.js}"
 LICENSE_API_JS="${AEGIS_LICENSE_API_JS:-${SCRIPT_DIR%/}/aegis-license-api.js}"
 TELEMETRY_JS="${SCRIPT_DIR%/}/aegis-telemetry.js"
 
 # --- T38: persistent personal profile ---------------------------------------
-# The chosen OpenCode provider profile is stored INSIDE the memories volume —
+# The chosen OpenCode provider profile is stored INSIDE the single code volume —
 # the tree that survives a home/opencode-config recreation and rides `aegis
 # backup` — and configure-workstation.sh re-applies it after `gentle-ai
 # install` rewrote opencode.json (docs/10-workstation.md section 12). These
 # are CONTAINER-side paths: `aegis profile` runs on the host and reaches
 # every one of them through `docker exec`. Overridable for tests, exactly
 # like the allowlist paths below.
-AEGIS_PROFILE_STORE_PATH="${AEGIS_PROFILE_STORE_PATH:-/workspace/memories/.aegis/profile.json}"
+AEGIS_PROFILE_STORE_PATH="${AEGIS_PROFILE_STORE_PATH:-/workspace/code/.aegis/profile.json}"
 AEGIS_PROFILES_DIR="${AEGIS_PROFILES_DIR:-/usr/local/share/aegis/profiles}"
 AEGIS_APPLY_PROFILE_SCRIPT="${AEGIS_APPLY_PROFILE_SCRIPT:-/usr/local/share/aegis/apply-profile.sh}"
 AEGIS_OPENCODE_JSON="${AEGIS_OPENCODE_JSON:-/home/dev/.config/opencode/opencode.json}"
@@ -533,20 +493,9 @@ AEGIS_DEVICE_CREDENTIAL_FILE="${AEGIS_DEVICE_CREDENTIAL_FILE:-$HOME/.aegis/devic
 log() { echo "aegis: $*"; }
 err() { echo "aegis: $*" >&2; }
 
-# The CLI ships as TWO entrypoints over THIS one implementation (feature
-# cli-aegis-dev, see docs/11-aegis-cli.md): `aegis` is the client surface and
-# `aegis-dev` (a thin wrapper that only forces the variable below) is the
-# owner/developer surface. AEGIS_CLI_MODE switches between them: `client` by
-# default, so a plain `aegis` never carries the commands coupled to the owner's
-# checkout. Read this early: every dispatch and the help text depend on it.
-AEGIS_CLI_MODE="${AEGIS_CLI_MODE:-client}"
-case "$AEGIS_CLI_MODE" in
-    client|dev) ;;
-    *)
-        err "unknown AEGIS_CLI_MODE: '${AEGIS_CLI_MODE}' (expected: client | dev)"
-        exit 2
-        ;;
-esac
+# 2026-11-04: this used to be one of two entrypoints (feature cli-aegis-dev,
+# see docs/11-aegis-cli.md) switched by AEGIS_CLI_MODE -- `aegis-dev` and its
+# checkout-coupled commands are retired; this is the only surface now.
 
 # The product version, read from the version.json that release-please bumps at
 # the repository root. One reader, two callers with different tolerances:
@@ -678,18 +627,12 @@ compose() {
     # runs from the repo. Since T18 the host runs the INSTALLED copy
     # (~/.aegis/workstation/.devcontainer), where that default is the user's
     # HOME: the whole Windows profile (with .ssh, .aegis, AppData) was readable
-    # inside the container at /workspace/memories/aegis-workstation. It was
+    # inside the container at /workspace/code/aegis-workstation. It was
     # read-only, so there was no host escape and no way to widen egress from
-    # inside - but the leak was real (found 2026-10-03). Pass the checkout
-    # explicitly; Docker Desktop needs a native path here, hence _to_native_path.
-    local repo_dir
-    repo_dir="$(update_repo_root 2>/dev/null || true)"
-    if [[ -z "$repo_dir" || ! -d "$repo_dir" ]]; then
-        # No checkout on this host (an install-only setup): mounting the
-        # installed configuration is harmless and, unlike the relative default,
-        # can never resolve to the home directory.
-        repo_dir="${AEGIS_WORKSTATION_DIR%/}"
-    fi
+    # inside - but the leak was real (found 2026-10-03). Pass the resolved
+    # configuration directory explicitly, which can never resolve to the home
+    # directory; Docker Desktop needs a native path here, hence _to_native_path.
+    local repo_dir="${AEGIS_WORKSTATION_DIR%/}"
     # egress-persistent-pairs (T4): a SECOND -f, only when the generated
     # extra_hosts override exists — compose merges it over the main file.
     # Passing an explicit -f (above) already opts out of compose's own
@@ -880,7 +823,7 @@ ensure_up() {
 # prints the resolved /workspace/<rel> path. Never resolves against the real
 # filesystem (no realpath/readlink) — this only has to validate the STRING,
 # because the actual containment guarantee comes from the container's own
-# mounts (see AGENTS.md: only /workspace/memories and /workspace/code exist).
+# mounts (see AGENTS.md: the single data volume mounts at /workspace).
 resolve_workspace_path() {
     local rel="${1:-}"
     if [[ -z "$rel" || "$rel" == "." ]]; then
@@ -909,16 +852,21 @@ resolve_workspace_path() {
 # T20 helpers — path validation and throwaway-container data operations
 # ---------------------------------------------------------------------------
 
-# resolve_data_path <rel> -> prints "<volume-name> <subpath-or-empty>" on
+# resolve_data_path <rel> -> prints "<volume-name> <subpath>" on
 # success, exits 1 with an error otherwise. Same rejection rules as
 # resolve_workspace_path (no absolute path, no ".." component) PLUS: the
-# first path segment must be exactly "memories" or "code" (the only two
-# volumes this container ever writes to), never "aegis-workstation" (the
-# read-only repo overlay) or anything else.
+# first path segment must be exactly "code" — single-code-volume
+# (2026-11-04): there is ONE data volume and it mounts at /workspace, so the
+# "code" segment is KEPT as the first subpath component (the volume root
+# holds the repositories under code/ inside it). "memories" is refused with
+# a migration pointer instead of silently resolving. The subpath printed
+# always starts with code/, because every consumer mounts the VOLUME ROOT
+# (check_no_symlink_escape, export/import, build windows volume-subpath) and
+# reaches the data through /data/code/....
 resolve_data_path() {
     local rel="${1:-}"
     if [[ -z "$rel" ]]; then
-        err "path must not be empty (expected memories/... or code/...)"
+        err "path must not be empty (expected code/...)"
         exit 2
     fi
     case "$rel" in
@@ -937,10 +885,14 @@ resolve_data_path() {
         fi
         if [[ "$first" -eq 1 ]]; then
             case "$part" in
-                memories) vol="$VOL_MEMORIES" ;;
                 code) vol="$VOL_CODE" ;;
+                memories)
+                    err "memories/... no longer exists: the workstation uses a single code volume (2026-11-04)."
+                    err "Your old memories content lives under /workspace/code — see docs/10-workstation.md (single-code-volume)."
+                    exit 2
+                    ;;
                 *)
-                    err "path must start with 'memories/' or 'code/': $rel"
+                    err "path must start with 'code/': $rel"
                     exit 1
                     ;;
             esac
@@ -949,7 +901,7 @@ resolve_data_path() {
         fi
         sub="${sub:+$sub/}$part"
     done
-    printf '%s %s' "$vol" "$sub"
+    printf '%s %s' "$vol" "code${sub:+/$sub}"
 }
 
 # check_no_symlink_escape <volume> <subpath> — mounts <volume> read-only in a
@@ -1084,26 +1036,16 @@ manifest_requests_anything() {
 # changes with a release). A new manifest or a new product version therefore
 # names a new tag, and an old image can never be mistaken for the current one.
 # CRs are dropped so a CRLF checkout hashes like an LF one.
-# How to retry a developer-image build. `env rebuild` is the owner's command;
-# a client's `aegis up` rebuilds a missing image by itself (S2, 2026-10-14:
-# only the owner rebuilds explicitly, clients just add/remove).
+# How to retry an env-image build: `add`/`remove environment|tool` rebuild by
+# themselves, but `env rebuild` forces one without changing the manifest.
 _rebuild_hint() {
-    if [[ "$AEGIS_CLI_MODE" == "client" ]]; then
-        printf "'aegis up' again"
-    else
-        printf "'aegis env rebuild' (or 'aegis up' again)"
-    fi
+    printf "'aegis env rebuild' (or 'aegis up' again)"
 }
 
-# The Dockerfile a developer image is built from: the owner rebuilds the whole
-# image from the checkout; a client builds only the env layers on top of the
-# verified published image (client-license-surface S2).
+# A client builds only the env layers on top of the verified published image
+# (client-license-surface S2).
 _dev_dockerfile() {
-    if [[ "$AEGIS_CLI_MODE" == "client" ]]; then
-        printf '%s' "${AEGIS_WORKSTATION_DIR%/}/.devcontainer/Dockerfile.client"
-    else
-        printf '%s' "${AEGIS_WORKSTATION_DIR%/}/.devcontainer/Dockerfile"
-    fi
+    printf '%s' "${AEGIS_WORKSTATION_DIR%/}/.devcontainer/Dockerfile.client"
 }
 
 env_image_hash() {
@@ -1121,9 +1063,7 @@ env_image_hash() {
         printf '\nversion %s\n' "$(_product_version || echo unknown)"
         # A client's image is built FROM the verified base: a re-published base
         # (same version, new digest) must name a new image (R3-002).
-        if [[ "$AEGIS_CLI_MODE" == "client" ]]; then
-            printf 'base %s\n' "$AEGIS_VERIFIED_BASE_REF"
-        fi
+        printf 'base %s\n' "$AEGIS_VERIFIED_BASE_REF"
     )"
     _sandbox_hash "$input"
 }
@@ -1173,28 +1113,14 @@ pull_and_verify_published_image() {
 # ---------------------------------------------------------------------------
 
 cmd_up() {
-    local build_local=0
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            --build) build_local=1; shift ;;
-            *) err "unknown option for 'aegis up': $1"; exit 2 ;;
-        esac
-    done
+    [[ $# -eq 0 ]] || { err "usage: aegis up"; exit 2; }
 
     # T29: the image now comes from the registry, so it is proven BEFORE compose
     # is allowed to start anything. Leaving verification out of the start path
     # would make the signature a seal nobody checks for the one run that matters.
     #
-    # --build is the escape for whoever maintains the product: it skips both
-    # steps and builds from the local checkout. A locally built image carries NO
-    # signature — there is no CI run behind it to sign — so that is said out
-    # loud, not discovered later when a verify fails.
-    if (( build_local )); then
-        log "building locally (--build): the resulting image carries no signature — it is the maintainer path, not the licensed one."
-    else
-        # Same licensed flow as `aegis image pull`, then the shared verify.
-        pull_and_verify_published_image
-    fi
+    # Same licensed flow as `aegis image pull`, then the shared verify.
+    pull_and_verify_published_image
 
     # The build context, regenerated from the manifest on EVERY start (network-
     # free, the same step `aegis env rebuild` runs): it is what decides which
@@ -1215,29 +1141,19 @@ cmd_up() {
     # function `aegis env rebuild` uses. There is no fallback to the bare image:
     # starting it would be the 2026-10-08 bug again ("Installed in the running
     # workstation: (none)"), just with a different cause.
-    #
-    # --build keeps the registry reference on purpose: it is the maintainer's
-    # "build what CI would publish, from this checkout", so its result is meant to
-    # stand in for the published image, and the next plain `up` pulls the signed
-    # one back over it. That clobbering is the point there, not a bug.
-    if (( build_local )); then
-        AEGIS_DEV_IMAGE="${AEGIS_IMAGE_REGISTRY}/${AEGIS_IMAGE_REPO}:${AEGIS_IMAGE_TAG}"
-        export AEGIS_DEV_IMAGE
-    else
-        resolve_dev_image
-        if [[ "$AEGIS_DEV_IMAGE" != "${AEGIS_IMAGE_REGISTRY}/${AEGIS_IMAGE_REPO}:${AEGIS_IMAGE_TAG}" ]]; then
-            if docker image inspect "$AEGIS_DEV_IMAGE" >/dev/null 2>&1; then
-                log "using your environment image ${AEGIS_DEV_IMAGE} (languages/tools from $(tildify "$AEGIS_ENV_FILE"))."
-            else
-                log "your environment image for this manifest and product version (${AEGIS_DEV_IMAGE}) is not here yet —"
-                log "building it now (first start with this manifest, a new product version, or a pruned image)."
-                # A subshell, so a missing helper's `exit` lands here and gets the
-                # refusal below instead of ending the launcher mid-sentence.
-                if ! ( build_dev_image "$context_seconds" ); then
-                    err "the environment image was not built — refusing to start the bare published image in its place."
-                    err "fix the cause above and run $(_rebuild_hint)."
-                    exit 1
-                fi
+    resolve_dev_image
+    if [[ "$AEGIS_DEV_IMAGE" != "${AEGIS_IMAGE_REGISTRY}/${AEGIS_IMAGE_REPO}:${AEGIS_IMAGE_TAG}" ]]; then
+        if docker image inspect "$AEGIS_DEV_IMAGE" >/dev/null 2>&1; then
+            log "using your environment image ${AEGIS_DEV_IMAGE} (languages/tools from $(tildify "$AEGIS_ENV_FILE"))."
+        else
+            log "your environment image for this manifest and product version (${AEGIS_DEV_IMAGE}) is not here yet —"
+            log "building it now (first start with this manifest, a new product version, or a pruned image)."
+            # A subshell, so a missing helper's `exit` lands here and gets the
+            # refusal below instead of ending the launcher mid-sentence.
+            if ! ( build_dev_image "$context_seconds" ); then
+                err "the environment image was not built — refusing to start the bare published image in its place."
+                err "fix the cause above and run $(_rebuild_hint)."
+                exit 1
             fi
         fi
     fi
@@ -1285,20 +1201,11 @@ cmd_up() {
     # up` runs right below regardless.
     cmd_allow_regenerate_extra_hosts || true
 
-    # --build forces the build explicitly: with both `image:` and `build:` in the
-    # compose file, a plain `compose up` would reuse the already-present registry
-    # image instead of rebuilding. The Dockerfile COPYs .devcontainer/generated/*
-    # (gitignored), which was regenerated from the manifest above — the same step
-    # `aegis env rebuild` runs.
-    if (( build_local )); then
-        compose build dev
-    fi
     # --no-build is what makes this a promise instead of a hope. With `image:` and `build:` both in
     # the compose file, a plain `compose up` would BUILD if the image were missing — silently
     # substituting an unsigned image for the one we just downloaded and verified. With this flag
     # compose either runs the image resolved above (verified, or the user's env image that is
-    # known to exist), or it fails. The `--build` path is unaffected: it built with its own
-    # explicit `compose build dev` first.
+    # known to exist), or it fails.
     # Friendly CLI flow: this ran raw before, so every `docker compose` line
     # (`[+] up 2/2 ✔ Container ... Healthy`) leaked straight to the terminal —
     # noise a first-time user has no way to interpret. Captured to a log and
@@ -1431,6 +1338,10 @@ cmd_sandbox() {
         exit 1
     fi
 
+    # Client-redesign T2.1: the template installs lazily at first use — after
+    # argument validation, before anything touches docker.
+    ensure_sandbox_template || exit 1
+
     # T8 (D2b): the allowlist is checked FIRST, before any docker call, so a
     # denied name cannot even half-start a session. An empty allowlist refuses
     # everything — that is the default and the point.
@@ -1529,9 +1440,6 @@ cmd_sandbox() {
     require_sandbox_compose_file
     # T10: never execute a compose that lives inside the repo about to be mounted.
     _sandbox_assert_compose_outside_repo "$repo_abs" || exit 1
-    if [[ "$AEGIS_SANDBOX_SOURCE" == "repository" ]]; then
-        err "WARNING: sandbox: running the compose from the checkout (${SANDBOX_COMPOSE_FILE}); run 'aegis install' to run it from outside every mount."
-    fi
     log "sandbox: project ${SANDBOX_PROJECT} (repo ${repo_abs})"
     sandbox_compose up -d --wait --build
 
@@ -3071,8 +2979,10 @@ cmd_allow_list() {
 # is the licence report — the same code `aegis license` reaches by its own name.
 # ---------------------------------------------------------------------------
 cmd_account() {
-    # The license messages below name the spelling the user typed.
-    _LICENSE_CMD="account"
+    # The license messages below name the spelling the user typed. `license`
+    # is the primary spelling (client-redesign L4); `account` stays as an
+    # alias, and the dispatcher sets _LICENSE_CMD before calling this.
+    _LICENSE_CMD="${_LICENSE_CMD:-license}"
     local action="${1:-license}"
     [[ $# -gt 0 ]] && shift || true
     case "$action" in
@@ -3091,7 +3001,7 @@ cmd_account() {
         -*) cmd_license "$action" "$@" ;;
         *)
             err "unknown 'aegis account' subcommand: ${action:-<none>}"
-            err "usage: aegis account [license|activate|renew|heartbeat|retire] — the licence, nothing else"
+            err "usage: aegis ${_LICENSE_CMD} [license|activate|renew|heartbeat|retire] — the licence, nothing else"
             exit 2
             ;;
     esac
@@ -3444,9 +3354,15 @@ cmd_image_verify() {
 cmd_image() {
     local verb="${1:-}"
     case "$verb" in
-        pull) shift; cmd_image_pull "$@" ;;
+        # Client-redesign L4: `image pull` died as a journey command — `aegis
+        # install` and `aegis up` pull (and verify) the signed image by
+        # themselves. `image verify` stays, as a diagnostic next to `audit`.
+        pull)
+            err "'aegis image pull' was retired: 'aegis up' (or 'aegis install') pulls and verifies the signed image by itself."
+            exit 2
+            ;;
         verify) shift; cmd_image_verify "$@" ;;
-        *) err "usage: aegis image pull|verify [--tag <tag>]"; exit 2 ;;
+        *) err "usage: aegis image verify [--tag <tag>]"; exit 2 ;;
     esac
 }
 
@@ -3557,383 +3473,16 @@ cmd_down() {
 # `aegis up` would be much worse.
 # --- T23: aegis update --------------------------------------------------------
 
-# Brings the HOST up to date: the checkout's commits, the launcher in
-# AEGIS_BIN_DIR and the installed configuration (T18 — which, since `up`/`audit`
-# execute it, is the copy that actually matters).
-#
-# THE CHANNEL IS REPLACEABLE, and that is the whole point of update_fetch(): today
-# the commits come from the checkout's Git remote; when T29 publishes signed
-# images to a registry, that ONE function is what changes, and everything below
-# (what changed, the confirmation, the application) stays as it is.
-#
-# It never applies anything without an explicit confirmation — there is no flag to
-# skip it — and it only exists on the host: the container has no copy of it.
+# cmd_update_client (below) brings the launcher and the configuration up to
+# date from aegis-cli's signed releases and the signed bundle. 2026-11-04: the
+# only other update mechanism this launcher ever had -- a git-fetch self-update
+# against a checkout, for AEGIS_CLI_MODE=dev -- is retired; every real
+# invocation, including the owner's own machine, runs as a client.
 
 # Whether the caller chose the bin directory (the client update writes next to
 # the RUNNING launcher otherwise — review finding R3-004).
 AEGIS_BIN_DIR_EXPLICIT="${AEGIS_BIN_DIR:+1}"
 AEGIS_BIN_DIR="${AEGIS_BIN_DIR:-$HOME/bin}"
-# What the host executes. Anything else in the repository (docs, task files) can
-# change without touching the machine.
-AEGIS_UPDATE_PATHS="templates/workstation/bin templates/workstation/.devcontainer
-templates/workstation/scripts templates/workstation/config
-templates/workstation/profiles templates/workstation/AGENTS.md
-templates/sandbox templates/build-windows scripts"
-
-update_repo_root() {
-    # AEGIS_REPO_WORKSTATION_DIR has no default (dev-mode-only, see above): an
-    # empty value must fail closed here, never resolve "/../.." to the
-    # filesystem root.
-    [[ -n "${AEGIS_REPO_WORKSTATION_DIR:-}" ]] || return 1
-    (cd "${AEGIS_REPO_WORKSTATION_DIR%/}/../.." && pwd)
-}
-
-# The single piece T29 replaces: where the changes come from.
-update_fetch() {
-    git -C "$(update_repo_root)" fetch "${AEGIS_UPDATE_REMOTE:-origin}" --prune
-}
-
-# --- BEGIN T21 F1 verify (extracted by odd/t21/f1-verify-test.sh) ---
-#
-# --- T21 F1: only install code the host can attribute to a trusted signer -----
-#
-# `aegis update` fast-forwards, so the ONLY thing that makes the incoming commits
-# trustworthy is a signature git can verify against a principal the host already
-# trusts. Two shapes clear an update, either one is enough:
-#
-#   * release-tag — remote_head is contained in a release the owner signed with an
-#     annotated tag (`product/v...`). This is the normal path today: a PR that
-#     GitHub merged is NOT itself owner-signed, but the release tag cut over it is,
-#     and that tag is the unit that actually ships.
-#   * per-commit — every new commit is signed by a trusted principal (the owner
-#     signing directly, e.g. a hotfix pushed to main without a merge commit).
-#
-# The trust list is read from the ALREADY-INSTALLED copy — the last update that was
-# verified and applied — and never from the commits being pulled in. A new commit
-# that edited `config/owners/allowed-signers` to add its own key could otherwise
-# self-authorize. The incoming tree carries the same file, so an added principal
-# only takes effect on the NEXT update, once this one has passed and installed it.
-# Trust therefore grows only in steps an already-verified update made.
-AEGIS_UPDATE_TRUST_FILE="${AEGIS_UPDATE_TRUST_FILE:-}"
-
-# Echo the trust file to use (first that exists AND lists a principal), or return
-# 1 when signature enforcement has not been bootstrapped yet.
-update_trust_file() {
-    local cand
-    if [[ -n "$AEGIS_UPDATE_TRUST_FILE" ]]; then
-        cand="$AEGIS_UPDATE_TRUST_FILE"
-    else
-        cand="${AEGIS_INSTALL_DIR%/}/config/owners/allowed-signers"
-        [[ -f "$cand" ]] || cand="$(update_repo_root)/templates/workstation/config/owners/allowed-signers"
-    fi
-    [[ -f "$cand" ]] || return 1
-    grep -qvE '^[[:space:]]*(#|$)' "$cand" || return 1
-    printf '%s\n' "$cand"
-}
-
-# Is <rev> reachable from an annotated tag git verifies against the trust file?
-# (the release-tag shape; for-each-ref --contains peels annotated tags to commits)
-update_covered_by_signed_tag() {
-    local root="$1" trust="$2" rev="$3" name
-    while IFS= read -r name; do
-        [[ -n "$name" ]] || continue
-        git -C "$root" -c gpg.format=ssh -c "gpg.ssh.allowedSignersFile=$trust" \
-            verify-tag "$name" >/dev/null 2>&1 && return 0
-    done < <(git -C "$root" for-each-ref --contains "$rev" \
-                --format='%(refname:short)' refs/tags 2>/dev/null)
-    return 1
-}
-
-# Are ALL commits in <from>..<to> signed by a trusted principal? Echoes the first
-# one that is not (the per-commit shape).
-update_all_commits_signed() {
-    local root="$1" trust="$2" from="$3" to="$4" c bad=""
-    while IFS= read -r c; do
-        [[ -n "$c" ]] || continue
-        if ! git -C "$root" -c gpg.format=ssh -c "gpg.ssh.allowedSignersFile=$trust" \
-                verify-commit "$c" >/dev/null 2>&1; then
-            bad="$c"; break
-        fi
-    done < <(git -C "$root" rev-list "$from..$to" 2>/dev/null)
-    [[ -n "$bad" ]] && { printf '%s\n' "$bad"; return 1; }
-    return 0
-}
-
-# Verdict for an update: 0 installs, 1 refuses. A missing trust list does NOT block
-# by default (that machine predates T21); AEGIS_REQUIRE_SIGNATURES=1 makes it fatal.
-update_verify() {
-    local root="$1" from="$2" to="$3" trust firstbad
-    if ! trust="$(update_trust_file)"; then
-        if [[ "${AEGIS_REQUIRE_SIGNATURES:-0}" == "1" ]]; then
-            err "no trusted signing principals configured, and AEGIS_REQUIRE_SIGNATURES=1."
-            err "bootstrap config/owners/allowed-signers (F0) before requiring signatures."
-            return 1
-        fi
-        log "NOTE: signatures are NOT enforced (no config/owners/allowed-signers yet)."
-        log "until the owner key is set up (F0), any fast-forward from ${AEGIS_UPDATE_REMOTE:-origin} is installed."
-        return 0
-    fi
-    log "verifying ${to} against $(tildify "$trust")"
-    if update_covered_by_signed_tag "$root" "$trust" "$to"; then
-        log "covered by an owner-signed release tag: accepted."
-        return 0
-    fi
-    if ! firstbad="$(update_all_commits_signed "$root" "$trust" "$from" "$to")"; then
-        err "not signed by a trusted principal, and not under a signed release tag."
-        err "  first offending commit: $(git -C "$root" show -s --format='%h %s' "$firstbad" 2>/dev/null)"
-        err "every new commit must be signed, or ${to} must sit under an annotated release tag the owner signed."
-        err "a GitHub-merged PR is not owner-signed on its own: cut and sign the release tag (F0)."
-        return 1
-    fi
-    log "every new commit is signed by a trusted principal: accepted."
-    return 0
-}
-# --- END T21 F1 verify ---
-
-# Which files of templates/workstation/bin/ the HOST runs, one per line.
-#
-# The list is DATA in the checkout (templates/workstation/host-launcher-files.txt),
-# not code in this script, on purpose: the launcher that is RUNNING decides what
-# gets installed, so a list hard-coded here made every new helper need two
-# `aegis update` runs (the old launcher did not know the new name). Reading the
-# CHECKOUT's list means a helper added to bin/ and to that file is installed by a
-# single update — provided the running launcher already has this logic (the
-# change that introduced it still arrives the old way, once).
-#
-# bin/ also holds CONTAINER-side files (az, gh, aegis-git-credential...) that the
-# Dockerfile copies into the image; they must never reach the host's PATH, where
-# they would shadow the real az/gh. That is why this is a list and not a glob.
-#
-# Names are validated (a plain file name that exists in bin/); anything else is
-# ignored. A checkout without the list file (older) gets the built-in set below,
-# which is the ONE copy of the fallback.
-AEGIS_HOST_FILES_BUILTIN="aegis aegis-license.js aegis-activate.js aegis-license-api.js aegis-secret-protect.js aegis-telemetry.js aegis.cmd aegis.ps1"
-
-update_host_files() {
-    local root="$1" list line f
-    local bin="${root%/}/templates/workstation/bin"
-    list="${root%/}/templates/workstation/host-launcher-files.txt"
-    local -a names=()
-    if [[ -f "$list" ]]; then
-        while IFS= read -r line || [[ -n "$line" ]]; do
-            line="${line%%#*}"
-            line="${line//[[:space:]]/}"
-            [[ -n "$line" ]] || continue
-            case "$line" in
-                */*|*[\\]*|.*)
-                    log "ignoring '${line}' in host-launcher-files.txt: not a plain file name" >&2
-                    continue ;;
-            esac
-            [[ -f "${bin}/${line}" ]] || continue
-            names+=("$line")
-        done < "$list"
-    fi
-    if [[ "${#names[@]}" -eq 0 ]]; then
-        for f in $AEGIS_HOST_FILES_BUILTIN; do
-            [[ -f "${bin}/${f}" ]] && names+=("$f")
-        done
-    fi
-    if [[ "${#names[@]}" -gt 0 ]]; then
-        printf '%s\n' "${names[@]}"
-    fi
-    return 0
-}
-
-# Installs the launcher files next to the one running, backing up what was there.
-    update_install_launcher() {
-        local root="$1" src="${root%/}/templates/workstation/bin" dst="${AEGIS_BIN_DIR%/}"
-        local stamp f tmp
-        stamp="$(date -u +%Y%m%dT%H%M%SZ)"
-        mkdir -p "$dst"
-        while IFS= read -r f; do
-            [[ -n "$f" ]] || continue
-            # Atomic replace: write the new bytes BESIDE the old file and rename over
-            # it. Copying straight onto the target would truncate the very inode this
-            # script is running from — and bash reads a script as it goes, not all at
-            # once — so it would carry on from its old offset into the new bytes and
-            # die with a syntax error. Renaming leaves the running copy on its own
-            # (orphaned) inode, which is exactly what makes this safe.
-            tmp="${dst}/.${f}.new-${stamp}"
-            cp "${src}/${f}" "$tmp"
-            [[ "${f}" == "aegis" || "${f}" == "aegis-dev" ]] && chmod +x "$tmp" 2>/dev/null || true
-            [[ -f "${dst}/${f}" ]] && cp -p "${dst}/${f}" "${dst}/${f}.bak-${stamp}"
-            mv -f "$tmp" "${dst}/${f}"
-            log "launcher updated: ${f} -> $(tildify "${dst}/${f}")"
-        done < <(update_host_files "$root")
-    }
-
-# The checkout being up to date says nothing about what the host RUNS: the
-# launcher in AEGIS_BIN_DIR and the installed configuration copy can be behind it.
-# This compares them and offers to sync — with the same per-file backups.
-update_sync_installed() {
-    local root="$1" dry_run="$2"
-    local src="${root%/}/templates/workstation/bin" dst="${AEGIS_BIN_DIR%/}"
-    local -a stale=()
-    local f
-    while IFS= read -r f; do
-        [[ -n "$f" ]] || continue
-        cmp -s "${src}/${f}" "${dst}/${f}" 2>/dev/null || stale+=("$f")
-    done < <(update_host_files "$root")
-    # The installed copy is what the host executes — its scripts, its compose and
-    # its config — so the WHOLE copy is compared, not just one file: a script fix
-    # (like the allowlist one) lands there too, and nothing else would carry it.
-    # Refreshing it is `cmd_install`, which is a small tree and backs up first.
-    local copy_differs=0
-    if [[ -d "${AEGIS_INSTALL_DIR%/}" ]]; then
-        diff -rq "${root%/}/templates/workstation" "${AEGIS_INSTALL_DIR%/}" \
-            -x '.git' >/dev/null 2>&1 || copy_differs=1
-    fi
-    # T10: the sandbox template is installed by the SAME `cmd_install`, so it is
-    # compared the same way. The destination is the sandbox INSTALL dir, not the
-    # per-repo state root (they are deliberately different; see the constants).
-    local sandbox_copy_differs=0
-    if [[ -d "${AEGIS_SANDBOX_INSTALL_DIR%/}" && -f "${root%/}/templates/sandbox/.devcontainer/docker-compose.yml" ]]; then
-        diff -rq "${root%/}/templates/sandbox" "${AEGIS_SANDBOX_INSTALL_DIR%/}" \
-            -x '.git' >/dev/null 2>&1 || sandbox_copy_differs=1
-    fi
-    # T25: the build-windows Dockerfile is installed by the same `cmd_install`.
-    local build_windows_copy_differs=0
-    if [[ -d "${AEGIS_BUILD_WINDOWS_INSTALL_DIR%/}" && -f "${root%/}/templates/build-windows/Dockerfile" ]]; then
-        diff -rq "${root%/}/templates/build-windows" "${AEGIS_BUILD_WINDOWS_INSTALL_DIR%/}" \
-            -x '.git' >/dev/null 2>&1 || build_windows_copy_differs=1
-    fi
-    if [[ "${#stale[@]}" -eq 0 && "$copy_differs" -eq 0 && "$sandbox_copy_differs" -eq 0 && "$build_windows_copy_differs" -eq 0 ]]; then
-        log "the launcher and the configuration the host runs are up to date."
-        return 0
-    fi
-    if [[ "${#stale[@]}" -gt 0 ]]; then
-        log "the launcher in $(tildify "$dst") is behind the checkout: ${stale[*]}"
-    fi
-    if [[ "$copy_differs" -eq 1 ]]; then
-        log "the installed configuration copy is behind the checkout ($(tildify "$AEGIS_INSTALL_DIR"))."
-    fi
-    if [[ "$sandbox_copy_differs" -eq 1 ]]; then
-        log "the installed sandbox template is behind the checkout ($(tildify "$AEGIS_SANDBOX_INSTALL_DIR"))."
-    fi
-    if [[ "$build_windows_copy_differs" -eq 1 ]]; then
-        log "the installed build-windows template is behind the checkout ($(tildify "$AEGIS_BUILD_WINDOWS_INSTALL_DIR"))."
-    fi
-    if [[ "$dry_run" == "1" ]]; then
-        log "dry run: nothing was applied."
-        return 0
-    fi
-    # vault_confirm is the shared yes/no prompt (it was born in the vault code and
-    # is generic); this asks before touching anything the host executes.
-    if ! vault_confirm "update what the host runs (the previous files are backed up)?"; then
-        log "cancelled: nothing was installed."
-        return 0
-    fi
-    [[ "${#stale[@]}" -gt 0 ]] && update_install_launcher "$root"
-    [[ "$copy_differs" -eq 1 || "$sandbox_copy_differs" -eq 1 || "$build_windows_copy_differs" -eq 1 ]] && cmd_install
-    return 0
-}
-
-cmd_update() {
-    local dry_run=0
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            --dry-run) dry_run=1; shift ;;
-            -*) err "unknown option for 'aegis update': $1"; exit 2 ;;
-            *) err "usage: aegis update [--dry-run]"; exit 2 ;;
-        esac
-    done
-
-    if ! command -v git >/dev/null 2>&1; then
-        err "git is required for 'aegis update' but was not found in PATH."
-        exit 1
-    fi
-    local root branch upstream
-    root="$(update_repo_root)"
-    if [[ ! -e "${root}/.git" ]]; then
-        err "not a git checkout: ${root}"
-        err "set AEGIS_REPO_WORKSTATION_DIR to the template inside your checkout."
-        exit 1
-    fi
-    branch="$(git -C "$root" rev-parse --abbrev-ref HEAD)"
-    upstream="$(git -C "$root" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)"
-    [[ -n "$upstream" ]] || upstream="${AEGIS_UPDATE_REMOTE:-origin}/${branch}"
-
-    log "checking ${upstream} ..."
-    update_fetch
-    local local_head remote_head
-    local_head="$(git -C "$root" rev-parse --short HEAD)"
-    if ! remote_head="$(git -C "$root" rev-parse --short "$upstream" 2>/dev/null)"; then
-        err "cannot resolve ${upstream} after fetching."
-        exit 1
-    fi
-
-    if [[ "$local_head" == "$remote_head" ]]; then
-        log "already up to date: ${branch} at ${local_head}"
-        log "configuration in use: $(tildify "$AEGIS_WORKSTATION_DIR") (${AEGIS_CONFIG_SOURCE})"
-        # Nothing to FETCH does not mean nothing to do: the launcher in
-        # AEGIS_BIN_DIR and the installed configuration copy can be behind the
-        # checkout — which is exactly the normal case when the change was
-        # committed HERE on the host, or when the launcher was never copied.
-        # Without this, that change would never reach what the host runs.
-        update_sync_installed "$root" "$dry_run"
-        return 0
-    fi
-
-    local touches_stack=0 needs_rebuild=0 changed=() line f
-    while IFS= read -r line; do
-        [[ -n "$line" ]] && changed+=("$line")
-    done < <(git -C "$root" diff --name-only "${local_head}..${remote_head}" -- $AEGIS_UPDATE_PATHS)
-
-    log "update available: ${local_head} -> ${remote_head} (${branch})"
-    if [[ "${#changed[@]}" -eq 0 ]]; then
-        log "nothing the host executes changed: only documentation or task files."
-    else
-        log "what the host executes and changed:"
-        for f in "${changed[@]}"; do
-            printf '  %s\n' "$f"
-            case "$f" in
-                templates/workstation/.devcontainer/Dockerfile) needs_rebuild=1; touches_stack=1 ;;
-                templates/workstation/.devcontainer/*) touches_stack=1 ;;
-            esac
-        done
-    fi
-
-    if ! git -C "$root" merge-base --is-ancestor "$local_head" "$remote_head"; then
-        err "this checkout has commits on ${branch} that ${upstream} does not have."
-        err "'aegis update' only fast-forwards. Reconcile them (rebase or merge) and run it again."
-        exit 1
-    fi
-
-    # T21 F1: install only what we can attribute to a trusted signer. It runs even
-    # in --dry-run so the owner sees the verdict, and a refusal never touches the
-    # checkout, the launcher or the installed copy (nothing applied yet).
-    update_verify "$root" "$local_head" "$remote_head" || exit 1
-
-    if [[ "$dry_run" == "1" ]]; then
-        log "dry run: nothing was applied."
-        return 0
-    fi
-
-    local answer
-    printf 'aegis: apply this update? [y/N] '
-    read -r answer
-    case "$answer" in
-        y|Y|yes|YES) ;;
-        *)
-            log "cancelled: nothing was applied."
-            exit 0
-            ;;
-    esac
-
-    log "updating the checkout (fast-forward only)"
-    git -C "$root" merge --ff-only "$upstream"
-
-    update_install_launcher "$root"
-    cmd_install
-
-    if [[ "$needs_rebuild" == "1" ]]; then
-        log "next: aegis env rebuild (the Dockerfile changed, so the image needs it)."
-    elif [[ "$touches_stack" == "1" ]]; then
-        log "next: aegis up (the stack files changed)."
-    else
-        log "done: the launcher and the configuration are up to date."
-    fi
-}
 
 # --- T24: aegis secret --------------------------------------------------------
 
@@ -5384,7 +4933,14 @@ cmd_secret() {
             esac
             ;;
         rm) cmd_secret_rm "$@" ;;
-        migrate-kinds) cmd_secret_migrate_kinds ;;
+        migrate-kinds)
+            # Client-redesign L3: retired. The legacy namespaces above (if any
+            # are still on disk) keep working with the migrate hint in
+            # `secret list`; new secrets are always written kinded.
+            err "'aegis secret migrate-kinds' was retired: legacy secret namespaces keep working; new secrets are stored kinded."
+            err "  inspect what you have:  aegis secret list"
+            exit 2
+            ;;
         help|-h|--help) cmd_secret_help ;;
         *)
             err "unknown 'aegis secret' subcommand: $action"
@@ -5597,7 +5153,7 @@ _prune_backups() {
 # no sandbox template either, and that must not break `aegis install`.
 install_sandbox_template() {
     local dry_run="$1" force="$2"
-    local src="${AEGIS_INSTALL_SANDBOX_SOURCE:-$AEGIS_REPO_SANDBOX_DIR}"
+    local src="${AEGIS_INSTALL_SANDBOX_SOURCE:-}"
     local dst="${AEGIS_SANDBOX_INSTALL_DIR%/}"
     local src_native dst_native
     src_native="$(_to_native_path "$src")"
@@ -5657,7 +5213,7 @@ install_sandbox_template() {
 # is not an error (a host with no checkout has none).
 install_build_windows_template() {
     local dry_run="$1" force="$2"
-    local src="${AEGIS_INSTALL_BUILD_WINDOWS_SOURCE:-$AEGIS_REPO_BUILD_WINDOWS_DIR}"
+    local src="${AEGIS_INSTALL_BUILD_WINDOWS_SOURCE:-}"
     local dst="${AEGIS_BUILD_WINDOWS_INSTALL_DIR%/}"
     local src_native dst_native
     src_native="$(_to_native_path "$src")"
@@ -5889,6 +5445,24 @@ _client_fetch_registry_bundle() {
 }
 
 cmd_install() {
+    # Client-redesign L4.2: the complete first journey. Unlicensed, a leading
+    # license-id activates FIRST (nothing is installed before the machine has
+    # a valid license — "without a license it brings nothing").
+    if [[ "$(_client_license_state)" != "valid" ]]; then
+        if [[ -n "${1:-}" ]]; then
+            log "no license on this machine yet — activating before installing anything..."
+            _LICENSE_CMD="license"
+            cmd_license activate "$@"
+        else
+            err "'aegis install' needs a license — run the first journey in one command:"
+            err "  aegis install <license-id>"
+            err "or the explicit two-step alternative: aegis license activate <license-id>"
+            exit 2
+        fi
+        # The activation must have landed a valid license; anything else stops here.
+        [[ "$(_client_license_state)" == "valid" ]] || exit 1
+    fi
+
     local dry_run=0 force=0 source_override=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -5901,37 +5475,32 @@ cmd_install() {
     done
 
     local src=""
-    if [[ "$AEGIS_CLI_MODE" == "client" ]]; then
-        # OD1.2: a client install needs an ACTIVATED machine first — before any
-        # download or write. The device credential is the proof; without it
-        # there is no license to install with, so nothing is fetched.
-        if [[ ! -s "$AEGIS_DEVICE_CREDENTIAL_FILE" ]]; then
-            err "this machine is not activated — there is no license to install with."
-            err "activate it first: aegis account activate <license-id>"
-            exit 1
-        fi
-        # --from / AEGIS_INSTALL_SOURCE stay available (tests/debug); then the
-        # explicit AEGIS_INSTALL_URL; and the REGISTRY is the default channel
-        # when neither is set (OD1.3). Precedence is exactly the order below.
-        if [[ -n "$source_override" ]]; then
-            src="$source_override"
-        elif [[ -n "${AEGIS_INSTALL_SOURCE:-}" ]]; then
-            src="$AEGIS_INSTALL_SOURCE"
-        elif [[ -n "${AEGIS_INSTALL_URL:-}" ]]; then
-            _client_fetch_install_bundle || exit 1
-            src="$AEGIS_INSTALL_FETCHED_SRC"
-        else
-            _client_fetch_registry_bundle || exit 1
-            src="$AEGIS_INSTALL_FETCHED_SRC"
-        fi
-        # The bundle (and any checkout-like source) keeps the sandbox and
-        # build-windows templates next to the workstation one; an explicit
-        # override still wins for either.
-        AEGIS_INSTALL_SANDBOX_SOURCE="${AEGIS_INSTALL_SANDBOX_SOURCE:-$(dirname "$src")/sandbox}"
-        AEGIS_INSTALL_BUILD_WINDOWS_SOURCE="${AEGIS_INSTALL_BUILD_WINDOWS_SOURCE:-$(dirname "$src")/build-windows}"
-    else
-        src="${source_override:-${AEGIS_INSTALL_SOURCE:-$AEGIS_REPO_WORKSTATION_DIR}}"
+    # OD1.2: install needs an ACTIVATED machine first — before any download or
+    # write. The device credential is the proof; without it there is no
+    # license to install with, so nothing is fetched.
+    if [[ ! -s "$AEGIS_DEVICE_CREDENTIAL_FILE" ]]; then
+        err "this machine is not activated — there is no license to install with."
+        err "activate it first: aegis account activate <license-id>"
+        exit 1
     fi
+    # --from / AEGIS_INSTALL_SOURCE stay available (tests/debug); then the
+    # explicit AEGIS_INSTALL_URL; and the REGISTRY is the default channel
+    # when neither is set (OD1.3). Precedence is exactly the order below.
+    if [[ -n "$source_override" ]]; then
+        src="$source_override"
+    elif [[ -n "${AEGIS_INSTALL_SOURCE:-}" ]]; then
+        src="$AEGIS_INSTALL_SOURCE"
+    elif [[ -n "${AEGIS_INSTALL_URL:-}" ]]; then
+        _client_fetch_install_bundle || exit 1
+        src="$AEGIS_INSTALL_FETCHED_SRC"
+    else
+        _client_fetch_registry_bundle || exit 1
+        src="$AEGIS_INSTALL_FETCHED_SRC"
+    fi
+    # The bundle keeps the sandbox and build-windows templates next to the
+    # workstation one; an explicit override still wins for either.
+    AEGIS_INSTALL_SANDBOX_SOURCE="${AEGIS_INSTALL_SANDBOX_SOURCE:-$(dirname "$src")/sandbox}"
+    AEGIS_INSTALL_BUILD_WINDOWS_SOURCE="${AEGIS_INSTALL_BUILD_WINDOWS_SOURCE:-$(dirname "$src")/build-windows}"
     local dst="${AEGIS_INSTALL_DIR%/}"
     local src_native dst_native
     src_native="$(_to_native_path "$src")"
@@ -5969,16 +5538,11 @@ cmd_install() {
     # (see scripts/aegis-env.js), so nobody loses a tool without asking.
     local fresh=0 aegis_home other_state
     aegis_home="$(dirname "${dst_native%/}")"
-    # Activation writes license/device.json into the aegis home BEFORE the
-    # client install runs. Those are credentials, not a previous install: a
-    # client that activated first is still fresh, and must get the all-off
-    # manifest (otherwise its first `add tool` silently turns gh AND az on).
-    # In dev mode the historical rule stays: any state means an older install.
-    if [[ "$AEGIS_CLI_MODE" == "client" ]]; then
-        other_state="$(ls -A "${aegis_home}" 2>/dev/null | grep -vxE 'license|device\.json' || true)"
-    else
-        other_state="$(ls -A "${aegis_home}" 2>/dev/null || true)"
-    fi
+    # Activation writes license/device.json into the aegis home BEFORE install
+    # runs. Those are credentials, not a previous install: a machine that
+    # activated first is still fresh, and must get the all-off manifest
+    # (otherwise its first `add tool` silently turns gh AND az on).
+    other_state="$(ls -A "${aegis_home}" 2>/dev/null | grep -vxE 'license|device\.json' || true)"
     if [[ -z "$other_state" && ! -e "$AEGIS_ENV_FILE" ]]; then
         fresh=1
     fi
@@ -6005,33 +5569,19 @@ cmd_install() {
     cp -R "${src_native}" "${dst_native}"
 
     # Everything the launcher resolves from this folder (see the configuration
-    # block at the top of this file), so a half-copied tree is caught here. The
-    # CLIENT bundle is the curated subset in client-bundle.txt — no Dockerfile
-    # and none of the developer build scripts — so requiring them would reject
-    # a valid client install.
-    local missing=0 f required_files
-    if [[ "$AEGIS_CLI_MODE" == "client" ]]; then
-        # T5: bin/aegis is deliberately NOT required here anymore — aegis-cli's
-        # own signed releases own the launcher since T4, and the bundle no
-        # longer carries it (client-bundle.txt). Requiring it would reject
-        # every client install from now on, since it would never be there.
-        required_files=(
-            .devcontainer/docker-compose.yml .devcontainer/Dockerfile.client
-            scripts/aegis-env.js scripts/aegis-allowlist.js
-            scripts/generate-build-context.sh scripts/aegis-build-view.js
-            scripts/generate-allowlist.sh scripts/audit-container.sh
-            config/agent-guard.sh config/license-keys.json
-            config/allowlist-ports.conf AGENTS.md
-        )
-    else
-        required_files=(
-            .devcontainer/docker-compose.yml .devcontainer/Dockerfile
-            scripts/aegis-env.js scripts/aegis-build-view.js scripts/aegis-allowlist.js
-            scripts/generate-build-context.sh scripts/generate-allowlist.sh
-            scripts/audit-container.sh config/agent-guard.sh
-            config/license-keys.json config/allowlist-ports.conf AGENTS.md
-        )
-    fi
+    # block at the top of this file), so a half-copied tree is caught here.
+    # bin/aegis is deliberately NOT required here (T5): aegis-cli's own signed
+    # releases own the launcher since T4, and the bundle no longer carries it
+    # (client-bundle.txt) — requiring it would reject every install.
+    local missing=0 f
+    local -a required_files=(
+        .devcontainer/docker-compose.yml .devcontainer/Dockerfile.client
+        scripts/aegis-env.js scripts/aegis-allowlist.js
+        scripts/generate-build-context.sh scripts/aegis-build-view.js
+        scripts/generate-allowlist.sh scripts/audit-container.sh
+        config/agent-guard.sh config/license-keys.json
+        config/allowlist-ports.conf AGENTS.md
+    )
     for f in "${required_files[@]}"; do
         if [[ ! -e "${dst_native}/${f}" ]]; then
             err "the copy is missing: ${f}"
@@ -6069,11 +5619,118 @@ cmd_install() {
             ;;
     esac
 
-    install_sandbox_template "0" "${force}" || exit 1
-    # `aegis build windows` is a client command now (it has no developer-only
-    # dependency, and the client bundle carries the template) — installed
-    # unconditionally, same as the sandbox template above.
-    install_build_windows_template "0" "${force}" || exit 1
+    # Client-redesign L2/T2.1-T2.2: the templates no longer install here.
+    # Their sources persist so the first `aegis sandbox` / `aegis build
+    # windows` can install them lazily.
+    # The fetched bundle tmp is removed by the EXIT trap, so the lazy source
+    # must live somewhere persistent: inside the installed copy itself.
+    local lazy_src="${dst_native%/}/template-sources"
+    rm -rf "${lazy_src}"
+    mkdir -p "${lazy_src}"
+    [[ -f "$(_to_native_path "${AEGIS_INSTALL_SANDBOX_SOURCE:-}")/.devcontainer/docker-compose.yml" ]] \
+        && cp -R "$(_to_native_path "${AEGIS_INSTALL_SANDBOX_SOURCE}")" "${lazy_src}/sandbox"
+    [[ -f "$(_to_native_path "${AEGIS_INSTALL_BUILD_WINDOWS_SOURCE:-}")/Dockerfile" ]] \
+        && cp -R "$(_to_native_path "${AEGIS_INSTALL_BUILD_WINDOWS_SOURCE}")" "${lazy_src}/build-windows"
+    {
+        printf 'AEGIS_INSTALL_SANDBOX_SOURCE=%q\n' "${lazy_src}/sandbox"
+        printf 'AEGIS_INSTALL_BUILD_WINDOWS_SOURCE=%q\n' "${lazy_src}/build-windows"
+    } > "$(_to_native_path "${dst_native}/template-sources.env")" 2>/dev/null || {
+        err "could not persist the template sources — the first 'aegis sandbox' or 'aegis build windows' will not find them."
+        exit 1
+    }
+    log "the sandbox and build-windows templates install on first use (aegis sandbox / aegis build windows)."
+
+    # Client-redesign L4.2: the journey ends pointing at the next command.
+    # `aegis up` pulls and verifies the signed image by itself — install never
+    # duplicates that pull.
+    log "Next: aegis up   (pulls and verifies the signed image, then starts)"
+
+    # Client-redesign L5: the welcome banner crowns a successful install —
+    # the one moment a client is glad they downloaded Aegis. Install is rare
+    # and end-of-flow, so the art here is information-free by design and
+    # welcome; color is decided inside _aegis_banner by TTY.
+    _aegis_banner
+}
+
+# Client-redesign L2/T2.1-T2.2: the templates do NOT install during
+# `aegis install` — each installs lazily, at the first use of the command that
+# needs it, after argument validation and before the first docker call. The
+# sources chosen at install time persist in template-sources.env so a later
+# session can still resolve them.
+ensure_sandbox_template() {
+    # An explicitly configured AEGIS_SANDBOX_DIR is the user's own choice —
+    # nothing to install, nothing to touch.
+    [[ "${AEGIS_SANDBOX_SOURCE:-}" == explicit* ]] && return 0
+    local dst_native
+    dst_native="$(_to_native_path "${AEGIS_SANDBOX_INSTALL_DIR%/}")"
+    [[ -f "${dst_native}/.devcontainer/docker-compose.yml" ]] && return 0
+    local src="${AEGIS_INSTALL_SANDBOX_SOURCE:-}"
+    local sources_file
+    if [[ -z "$src" ]]; then
+        for sources_file in \
+            "$(_to_native_path "${AEGIS_INSTALL_DIR%/}/template-sources.env")" \
+            "$(_to_native_path "${AEGIS_WORKSTATION_DIR%/}/template-sources.env")"; do
+            if [[ -f "$sources_file" ]]; then
+                # shellcheck disable=SC1090
+                src="$(. "$sources_file"; printf '%s' "${AEGIS_INSTALL_SANDBOX_SOURCE:-}")"
+                [[ -n "$src" ]] && break
+            fi
+        done
+    fi
+    if [[ -z "$src" && -f "$sources_file" ]]; then
+        # shellcheck disable=SC1090
+        src="$(. "$sources_file"; printf '%s' "${AEGIS_INSTALL_SANDBOX_SOURCE:-}")"
+    fi
+    if [[ -z "$src" || ! -f "$(_to_native_path "$src")/.devcontainer/docker-compose.yml" ]]; then
+        err "the sandbox template is not installed and its source is unknown."
+        err "run 'aegis install' (or 'aegis update') to fetch the bundle that carries it, then retry."
+        return 1
+    fi
+    log "first run: installing the sandbox template..."
+    export AEGIS_INSTALL_SANDBOX_SOURCE="$src"
+    install_sandbox_template "0" "0" || {
+        err "cannot install the sandbox template — 'aegis sandbox' cannot continue."
+        return 1
+    }
+    return 0
+}
+
+ensure_build_windows_template() {
+    # An explicitly configured AEGIS_BUILD_WINDOWS_DIR is the user's own
+    # choice — nothing to install, nothing to touch.
+    [[ "${AEGIS_BUILD_WINDOWS_SOURCE:-}" == explicit* ]] && return 0
+    local dst_native
+    dst_native="$(_to_native_path "${AEGIS_BUILD_WINDOWS_INSTALL_DIR%/}")"
+    [[ -f "${dst_native}/Dockerfile" ]] && return 0
+    local src="${AEGIS_INSTALL_BUILD_WINDOWS_SOURCE:-}"
+    local sources_file
+    if [[ -z "$src" ]]; then
+        for sources_file in \
+            "$(_to_native_path "${AEGIS_INSTALL_DIR%/}/template-sources.env")" \
+            "$(_to_native_path "${AEGIS_WORKSTATION_DIR%/}/template-sources.env")"; do
+            if [[ -f "$sources_file" ]]; then
+                # shellcheck disable=SC1090
+                src="$(. "$sources_file"; printf '%s' "${AEGIS_INSTALL_BUILD_WINDOWS_SOURCE:-}")"
+                [[ -n "$src" ]] && break
+            fi
+        done
+    fi
+    if [[ -z "$src" && -f "$sources_file" ]]; then
+        # shellcheck disable=SC1090
+        src="$(. "$sources_file"; printf '%s' "${AEGIS_INSTALL_BUILD_WINDOWS_SOURCE:-}")"
+    fi
+    if [[ -z "$src" || ! -f "$(_to_native_path "$src")/Dockerfile" ]]; then
+        err "the build-windows template is not installed and its source is unknown."
+        err "run 'aegis install' (or 'aegis update') to fetch the bundle that carries it, then retry."
+        return 1
+    fi
+    log "first run: installing the build-windows template..."
+    export AEGIS_INSTALL_BUILD_WINDOWS_SOURCE="$src"
+    install_build_windows_template "0" "0" || {
+        err "cannot install the build-windows template — 'aegis build windows' cannot continue."
+        return 1
+    }
+    return 0
 }
 
 cmd_status() {
@@ -6092,10 +5749,9 @@ cmd_status() {
     echo
     echo "=== Volumes ==="
     if MSYS_NO_PATHCONV=1 docker run --rm --network none \
-        -v "${VOL_MEMORIES}:/v/memories:ro" \
-        -v "${VOL_CODE}:/v/code:ro" \
-        -v "${VOL_ENGRAM}:/v/engram:ro" \
-        "$BACKUP_IMAGE" du -sh /v/memories /v/code /v/engram 2>/dev/null; then
+        -v "${VOL_CODE}:/data:ro" \
+        -v "${VOL_ENGRAM}:/data/engram:ro" \
+        "$BACKUP_IMAGE" du -sh /data/code /data/engram 2>/dev/null; then
         :
     else
         log "could not read volume sizes (throwaway container failed)."
@@ -6150,32 +5806,29 @@ cmd_backup() {
     archive_name="aegis-workstation-backup-${ts}.tar.gz"
     manifest_name="aegis-workstation-backup-${ts}.manifest.json"
 
-    log "backing up memories, code and engram volumes -> ${dest%/}/${archive_name}"
+    log "backing up the code and engram volumes -> ${dest%/}/${archive_name}"
     log "(throwaway container, read-only mounts, --network none — never touches the home/config volumes)."
 
     # File counts computed from the SAME read-only mounts, before archiving,
     # so the manifest's counts and the archive's contents can never diverge.
     local counts
     counts="$(MSYS_NO_PATHCONV=1 docker run --rm --network none \
-        -v "${VOL_MEMORIES}:/data/memories:ro" \
-        -v "${VOL_CODE}:/data/code:ro" \
+        -v "${VOL_CODE}:/data:ro" \
         -v "${VOL_ENGRAM}:/data/engram:ro" \
         "$BACKUP_IMAGE" sh -c '
-            for d in memories code engram; do
+            for d in code engram; do
                 find "/data/$d" -type f 2>/dev/null | wc -l
             done
         ')"
-    local count_memories count_code count_engram
-    count_memories="$(sed -n '1p' <<<"$counts" | tr -d '[:space:]')"
-    count_code="$(sed -n '2p' <<<"$counts" | tr -d '[:space:]')"
-    count_engram="$(sed -n '3p' <<<"$counts" | tr -d '[:space:]')"
+    local count_code count_engram
+    count_code="$(sed -n '1p' <<<"$counts" | tr -d '[:space:]')"
+    count_engram="$(sed -n '2p' <<<"$counts" | tr -d '[:space:]')"
 
     MSYS_NO_PATHCONV=1 docker run --rm --network none \
-        -v "${VOL_MEMORIES}:/data/memories:ro" \
-        -v "${VOL_CODE}:/data/code:ro" \
+        -v "${VOL_CODE}:/data:ro" \
         -v "${VOL_ENGRAM}:/data/engram:ro" \
         -v "${dest}:/backup" \
-        "$BACKUP_IMAGE" tar czf "/backup/${archive_name}" -C /data memories code engram
+        "$BACKUP_IMAGE" tar czf "/backup/${archive_name}" -C /data code engram
 
     local archive_path="${dest%/}/${archive_name}"
     local sha256 size_bytes
@@ -6186,10 +5839,10 @@ cmd_backup() {
     # generated by this script itself or a fixed literal — never
     # user/archive-controlled content — so no JSON string-escaping is
     # needed).
-    printf '{\n  "timestamp": "%s",\n  "archive": "%s",\n  "sha256": "%s",\n  "size_bytes": %s,\n  "image": "%s",\n  "volumes": {"memories": "%s", "code": "%s", "engram": "%s"},\n  "file_counts": {"memories": %s, "code": %s, "engram": %s}\n}\n' \
+    printf '{\n  "timestamp": "%s",\n  "archive": "%s",\n  "sha256": "%s",\n  "size_bytes": %s,\n  "image": "%s",\n  "volumes": {"code": "%s", "engram": "%s"},\n  "file_counts": {"code": %s, "engram": %s}\n}\n' \
         "$ts" "$archive_name" "$sha256" "$size_bytes" "$BACKUP_IMAGE" \
-        "$VOL_MEMORIES" "$VOL_CODE" "$VOL_ENGRAM" \
-        "${count_memories:-0}" "${count_code:-0}" "${count_engram:-0}" \
+        "$VOL_CODE" "$VOL_ENGRAM" \
+        "${count_code:-0}" "${count_engram:-0}" \
         > "${dest%/}/${manifest_name}"
 
     printf '%s\n' "$ts" > "${dest%/}/.last-backup"
@@ -6199,17 +5852,17 @@ cmd_backup() {
     log "size: ${size_bytes} bytes"
     log "sha256: $sha256"
     log "manifest: ${dest%/}/${manifest_name}"
-    log "file counts — memories=${count_memories:-0} code=${count_code:-0} engram=${count_engram:-0}"
+    log "file counts — code=${count_code:-0} engram=${count_engram:-0}"
 }
 
 cmd_restore() {
     local archive="${1:-}"
-    [[ -z "$archive" ]] && { err "usage: aegis restore <archive> [--only memories|code|engram] [--replace] [--force]"; exit 2; }
+    [[ -z "$archive" ]] && { err "usage: aegis restore <archive> [--only code|engram] [--replace] [--force]"; exit 2; }
     shift
     local only="" replace=0 force=0
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --only) [[ $# -ge 2 ]] || { err "--only requires a value (memories|code|engram)"; exit 2; }; only="$2"; shift 2 ;;
+            --only) [[ $# -ge 2 ]] || { err "--only requires a value (code|engram)"; exit 2; }; only="$2"; shift 2 ;;
             --replace) replace=1; shift ;;
             --force) force=1; shift ;;
             *) err "unknown option: $1"; exit 2 ;;
@@ -6220,8 +5873,13 @@ cmd_restore() {
         exit 1
     fi
     case "$only" in
-        ""|memories|code|engram) ;;
-        *) err "--only must be one of: memories, code, engram"; exit 2 ;;
+        ""|code|engram) ;;
+        memories)
+            err "--only memories no longer exists: the workstation uses a single code volume (2026-11-04)."
+            err "Your old memories content lives under /workspace/code — see docs/10-workstation.md (single-code-volume)."
+            exit 2
+            ;;
+        *) err "--only must be one of: code, engram"; exit 2 ;;
     esac
 
     if is_up && [[ "$force" -ne 1 ]]; then
@@ -6247,14 +5905,17 @@ cmd_restore() {
         log "no manifest found next to archive ($manifest) — skipping sha256 verification."
     fi
 
-    local -a members=(memories code engram)
+    local -a members=(code engram)
     [[ -n "$only" ]] && members=("$only")
     local -a mounts=()
     local m
     for m in "${members[@]}"; do
         case "$m" in
-            memories) mounts+=(-v "${VOL_MEMORIES}:/data/memories") ;;
-            code) mounts+=(-v "${VOL_CODE}:/data/code") ;;
+            # single-code-volume: the code volume's root holds the repos under
+            # code/ inside it, so it mounts at /data (the archive's code/
+            # member extracts straight into it); the engram volume mounts at
+            # /data/engram exactly like before.
+            code) mounts+=(-v "${VOL_CODE}:/data") ;;
             engram) mounts+=(-v "${VOL_ENGRAM}:/data/engram") ;;
         esac
     done
@@ -6311,7 +5972,7 @@ cmd_restore() {
 
 cmd_export() {
     local rel="${1:-}"
-    [[ -z "$rel" ]] && { err "usage: aegis export <memories|code>/<path> [--dest <dir>]"; exit 2; }
+    [[ -z "$rel" ]] && { err "usage: aegis export <code>/<path> [--dest <dir>]"; exit 2; }
     shift
     local dest="$DEFAULT_EXPORT_DIR"
     while [[ $# -gt 0 ]]; do
@@ -6365,12 +6026,12 @@ cmd_import() {
             *)
                 if [[ -z "$host_path" ]]; then host_path="$1"
                 elif [[ -z "$rel" ]]; then rel="$1"
-                else err "usage: aegis import <host-path> <memories|code>/<path> [--replace]"; exit 2
+                else err "usage: aegis import <host-path> <code>/<path> [--replace]"; exit 2
                 fi
                 shift ;;
         esac
     done
-    [[ -z "$host_path" || -z "$rel" ]] && { err "usage: aegis import <host-path> <memories|code>/<path> [--replace]"; exit 2; }
+    [[ -z "$host_path" || -z "$rel" ]] && { err "usage: aegis import <host-path> <code>/<path> [--replace]"; exit 2; }
     if [[ ! -e "$host_path" ]]; then
         err "host path not found: $host_path"
         exit 1
@@ -6490,9 +6151,6 @@ ensure_build_windows_image() {
         err "run 'aegis install' (or set AEGIS_BUILD_WINDOWS_DIR to the folder that holds its Dockerfile)."
         exit 1
     fi
-    if [[ "$AEGIS_BUILD_WINDOWS_SOURCE" == "repository" ]]; then
-        err "WARNING: build-windows: building from the checkout (${dir}); run 'aegis install' to build from outside every mount."
-    fi
     log "building ${image} once (Debian + Wine + Inno Setup; needs the network, takes a few minutes)..."
     if ! docker build -t "$image" "$(_to_native_path "$dir")"; then
         err "the build-windows image could not be built; nothing was compiled."
@@ -6501,7 +6159,7 @@ ensure_build_windows_image() {
 }
 
 cmd_build_windows() {
-    local usage="usage: aegis build windows <memories|code>/<path>/<file>.iss"
+    local usage="usage: aegis build windows <code>/<path>/<file>.iss"
     local rel=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -6522,16 +6180,15 @@ cmd_build_windows() {
     resolved="$(resolve_data_path "$rel")" || exit 1
     read -r vol sub <<<"$resolved"
 
-    # The project root is code/<Cliente>/<repo> or memories/<proyecto>: the only
-    # folder the build container gets to see.
-    local prefix="${rel%%/*}" need
-    case "$prefix" in
-        code) need=2 ;;
-        *) need=1 ;;
-    esac
+    # The project root is code/<Cliente>/<repo>: the only folder the build
+    # container gets to see. single-code-volume: sub always starts with code/
+    # (the volume root is the whole /workspace), so that head is dropped and
+    # the project-root math stays on the segments after it.
+    local need=2
     local -a segs=()
     local seg
     IFS='/' read -r -a segs <<<"$sub"
+    segs=("${segs[@]:1}")
     for seg in "${segs[@]}"; do
         # Empty or "." segments would make the project root ambiguous; a comma
         # or a quote would break --mount's CSV syntax.
@@ -6542,23 +6199,23 @@ cmd_build_windows() {
         esac
     done
     if (( ${#segs[@]} <= need )); then
-        if [[ "$prefix" == "code" ]]; then
-            err "the .iss must live inside a project: code/<Cliente>/<repo>/.../<file>.iss (got: $rel)"
-        else
-            err "the .iss must live inside a project: memories/<proyecto>/.../<file>.iss (got: $rel)"
-        fi
+        err "the .iss must live inside a project: code/<Cliente>/<repo>/.../<file>.iss (got: $rel)"
         exit 2
     fi
     local root iss_rel
     root="$(IFS='/'; printf '%s' "${segs[*]:0:need}")"
     iss_rel="$(IFS='/'; printf '%s' "${segs[*]:need}")"
 
+    # Client-redesign T2.2: the template installs lazily at first use — after
+    # argument validation, before anything touches docker.
+    ensure_build_windows_template || exit 1
+
     require_build_windows_engine
     local image
     image="$(build_windows_image)"
     ensure_build_windows_image "$image"
 
-    log "compiling ${rel} (project ${prefix}/${root} only; --network none, read-only, uid 1000)."
+    log "compiling ${rel} (project code/${root} only; --network none, read-only, uid 1000)."
     local rc=0
     # /tmp holds the whole Wine prefix: Wine 10 copies real PE DLLs for both
     # system32 and syswow64, ~1.4 GB measured on the host (T25.4, 2026-10-08);
@@ -6576,9 +6233,9 @@ cmd_build_windows() {
     local out_dir
     out_dir="$(dirname "$iss_rel")"
     if [[ "$out_dir" == "." ]]; then
-        out_dir="${prefix}/${root}/Output"
+        out_dir="code/${root}/Output"
     else
-        out_dir="${prefix}/${root}/${out_dir}/Output"
+        out_dir="code/${root}/${out_dir}/Output"
     fi
     log "done. The installer is in /workspace/${out_dir} (unless the .iss sets its own OutputDir)."
     log "take it out with: aegis export ${out_dir}"
@@ -6606,7 +6263,7 @@ cmd_build() {
     case "$verb" in
         windows) shift; cmd_build_windows "$@" ;;
         clean) shift; cmd_build_clean "$@" ;;
-        *) err "usage: aegis build windows <memories|code>/<path>/<file>.iss | aegis build clean"; exit 2 ;;
+        *) err "usage: aegis build windows <code>/<path>/<file>.iss | aegis build clean"; exit 2 ;;
     esac
 }
 
@@ -6657,9 +6314,9 @@ env_rebuild_and_apply() {
         exit "$rc"
     fi
 
-    # A client's env tag includes the verified base digest, so the base is
-    # pulled and verified before the tag is computed (R3-002).
-    if [[ "$AEGIS_CLI_MODE" == "client" ]] && manifest_requests_anything && [[ -z "$AEGIS_VERIFIED_BASE_REF" ]]; then
+    # The env tag includes the verified base digest, so the base is pulled and
+    # verified before the tag is computed (R3-002).
+    if manifest_requests_anything && [[ -z "$AEGIS_VERIFIED_BASE_REF" ]]; then
         pull_and_verify_published_image
     fi
     resolve_dev_image
@@ -6790,61 +6447,51 @@ build_dev_image() {
     [[ "${AEGIS_BUILD_VERBOSE:-0}" == "1" ]] && view_args+=(--verbose)
     # MSYS_NO_PATHCONV because this call hands native-form paths to node
     # (see _to_native_path above), and node — not bash — spawns docker from
-    # there: no MSYS conversion may interfere in between. CAREFUL: that also
-    # means EVERY path in this call must already be native — including the
-    # helper's own path, because a dev-mode AEGIS_WORKSTATION_DIR is
-    # POSIX-shaped (e.g. /c/...) and node would otherwise resolve it
-    # relative to the current drive.
-    local -a build_cmd=(docker compose -f "$(_to_native_path "$COMPOSE_FILE")" build "$DEV_SERVICE")
-    # The credential the build runs with, when it needs one (the client branch
-    # below explains it). Both stay empty on every other path, so the build runs
-    # exactly as it always did.
-    local build_config="" build_config_native=""
-    if [[ "$AEGIS_CLI_MODE" == "client" ]]; then
-        # S2: a client has no checkout. It builds only the env layers
-        # (Dockerfile.client, shipped in the signed bundle) FROM the published
-        # image, pinned by the digest cosign just verified — pulled and verified
-        # here unless this run already did (aegis up does it first).
-        local client_dockerfile
-        client_dockerfile="$(_dev_dockerfile)"
-        if [[ ! -f "$client_dockerfile" ]]; then
-            err "the configuration is incomplete - $(tildify "$client_dockerfile") is missing; run 'aegis install'."
-            return 1
-        fi
-        [[ -n "$AEGIS_VERIFIED_BASE_REF" ]] || pull_and_verify_published_image
-        # 2026-10-16: a client build reads base-image blobs from OUR registry
-        # without asking — BuildKit fetches them lazily whenever its local store
-        # lacks them — and the fetch that fails lands in the EXPORT, at the end of
-        # a build that can take ten minutes. The pull and the verify already ran
-        # with a token minted for them; the build ran with the user's
-        # ~/.docker/config.json instead, where a credential that was old, absent,
-        # or held by a Windows credential helper answered "401 Unauthorized" with
-        # every layer already built and the image unpackable. Same throwaway
-        # config as the pull, minted HERE so its hour covers the whole build, and
-        # removed when the build ends. The dev path above is untouched on purpose:
-        # its base is a public image, and its registry is the user's.
-        build_config="$(mktemp -d)" || build_config=""
-        if [[ -n "$build_config" ]]; then
-            local build_token=""
-            build_token="$(_image_download_token "build")" || build_token=""
-            if [[ -z "$build_token" ]] || ! _write_registry_config "$build_config" "$build_token"; then
-                # Never a new way to fail: until today this build asked for no
-                # credential at all, so a licensing hiccup falls back to what the
-                # environment already has — said out loud, because that is also
-                # the state whose export can answer 401.
-                err "WARNING: the build runs without a fresh registry credential - it falls back to this environment's docker config, and reading base images from our registry can then answer 401 at the export."
-                rm -rf "$build_config"
-                build_config=""
-            fi
-            build_token=""
-        fi
-        [[ -n "$build_config" ]] && build_config_native="$(_to_native_path "$build_config")"
-        build_cmd=(docker build
-            -f "$(_to_native_path "$client_dockerfile")"
-            --build-arg "AEGIS_BASE_IMAGE=${AEGIS_VERIFIED_BASE_REF}"
-            -t "$AEGIS_DEV_IMAGE"
-            "$(_to_native_path "${AEGIS_WORKSTATION_DIR%/}")")
+    # there: no MSYS conversion may interfere in between.
+    #
+    # A client has no checkout. It builds only the env layers (Dockerfile.client,
+    # shipped in the signed bundle) FROM the published image, pinned by the
+    # digest cosign just verified — pulled and verified here unless this run
+    # already did (aegis up does it first).
+    local client_dockerfile
+    client_dockerfile="$(_dev_dockerfile)"
+    if [[ ! -f "$client_dockerfile" ]]; then
+        err "the configuration is incomplete - $(tildify "$client_dockerfile") is missing; run 'aegis install'."
+        return 1
     fi
+    [[ -n "$AEGIS_VERIFIED_BASE_REF" ]] || pull_and_verify_published_image
+    # 2026-10-16: a client build reads base-image blobs from OUR registry
+    # without asking — BuildKit fetches them lazily whenever its local store
+    # lacks them — and the fetch that fails lands in the EXPORT, at the end of
+    # a build that can take ten minutes. The pull and the verify already ran
+    # with a token minted for them; the build ran with the user's
+    # ~/.docker/config.json instead, where a credential that was old, absent,
+    # or held by a Windows credential helper answered "401 Unauthorized" with
+    # every layer already built and the image unpackable. Same throwaway
+    # config as the pull, minted HERE so its hour covers the whole build, and
+    # removed when the build ends.
+    local build_config="" build_config_native=""
+    build_config="$(mktemp -d)" || build_config=""
+    if [[ -n "$build_config" ]]; then
+        local build_token=""
+        build_token="$(_image_download_token "build")" || build_token=""
+        if [[ -z "$build_token" ]] || ! _write_registry_config "$build_config" "$build_token"; then
+            # Never a new way to fail: until today this build asked for no
+            # credential at all, so a licensing hiccup falls back to what the
+            # environment already has — said out loud, because that is also
+            # the state whose export can answer 401.
+            err "WARNING: the build runs without a fresh registry credential - it falls back to this environment's docker config, and reading base images from our registry can then answer 401 at the export."
+            rm -rf "$build_config"
+            build_config=""
+        fi
+        build_token=""
+    fi
+    [[ -n "$build_config" ]] && build_config_native="$(_to_native_path "$build_config")"
+    local -a build_cmd=(docker build
+        -f "$(_to_native_path "$client_dockerfile")"
+        --build-arg "AEGIS_BASE_IMAGE=${AEGIS_VERIFIED_BASE_REF}"
+        -t "$AEGIS_DEV_IMAGE"
+        "$(_to_native_path "${AEGIS_WORKSTATION_DIR%/}")")
     # One assignment array, never empty: `env` with no assignment is the same as
     # no `env` at all, and an empty expansion would trip `set -u` on older bash.
     local -a build_env=(MSYS_NO_PATHCONV=1)
@@ -6873,14 +6520,12 @@ cmd_env() {
     case "$action" in
         list) cmd_env_list "$@" ;;
         rebuild)
-            while [[ $# -gt 0 ]]; do
-                case "$1" in
-                    --verbose) AEGIS_BUILD_VERBOSE=1; shift ;;
-                    *) err "unknown option for 'aegis env rebuild': $1"; exit 2 ;;
-                esac
-            done
-            log "rebuilding the workstation from $(tildify "$AEGIS_ENV_FILE")"
-            env_rebuild_and_apply
+            # Client-redesign L3: retired. add/remove environment|tool rebuild
+            # by themselves; this manual escape only duplicated them.
+            err "'aegis env rebuild' was retired: 'aegis add environment|tool' rebuilds by itself."
+            err "  add a language:    aegis add environment <lang> [version...]"
+            err "  add a tool:        aegis add tool <name>"
+            exit 2
             ;;
         *)
             err "unknown 'aegis env' subcommand: $action"
@@ -7178,13 +6823,7 @@ tool_set_and_rebuild() {
     [[ "$value" == "true" ]] && state="on"
     current="$(node "$ENV_JS" tool-flag "$AEGIS_ENV_FILE" "$tool")" || exit 1
     if [[ "$current" == "$value" ]]; then
-        if [[ "$AEGIS_CLI_MODE" == "client" ]]; then
-            # A client has no forced rebuild (env rebuild is the owner's): the
-            # image for this manifest already exists, so there is nothing to do.
-            log "$tool is already $state in the manifest — nothing to rebuild."
-        else
-            log "$tool is already $state in the manifest — nothing to rebuild (to rebuild anyway: aegis env rebuild)."
-        fi
+        log "$tool is already $state in the manifest — nothing to rebuild (to rebuild anyway: aegis env rebuild)."
         return 0
     fi
 
@@ -7252,7 +6891,7 @@ cmd_telemetry() {
 # loses the chosen `provider` block, because `gentle-ai install` rewrites
 # opencode.json from scratch and the profile application used to be a purely
 # manual step. The chosen profile now persists at
-# /workspace/memories/.aegis/profile.json (data volume: survives the wipe,
+# /workspace/code/.aegis/profile.json (data volume: survives the wipe,
 # rides `aegis backup`), and configure-workstation.sh re-applies it at the
 # end of every configure run.
 #
@@ -7468,8 +7107,8 @@ cmd_profile_help() {
 aegis profile — the personal OpenCode provider profile, persisted (T38)
 
   aegis profile use <path|name>
-        Store the chosen profile at /workspace/memories/.aegis/profile.json
-        (the memories data volume: survives a home/opencode-config recreation
+        Store the chosen profile at /workspace/code/.aegis/profile.json
+        (the code data volume: survives a home/opencode-config recreation
         and rides `aegis backup`) and apply it immediately when opencode.json
         is already there — the merge is apply-profile.sh's shallow merge of
         the top-level `provider` key, idempotent, and leaves the gentle-ai
@@ -7511,15 +7150,11 @@ cmd_profile() {
 }
 
 cmd_help() {
-    if [[ "$AEGIS_CLI_MODE" == "dev" ]]; then
-        cmd_help_dev
-    else
-        case "$(_client_license_state)" in
-            valid) cmd_help_client ;;
-            expired) cmd_help_client_unlicensed; cmd_help_client_expired ;;
-            *) cmd_help_client_unlicensed ;;
-        esac
-    fi
+    case "$(_client_license_state)" in
+        valid) cmd_help_client ;;
+        expired) cmd_help_client_unlicensed; cmd_help_client_expired ;;
+        *) cmd_help_client_unlicensed ;;
+    esac
 }
 
 # Appended to the unlicensed document when the license expired: the commands
@@ -7529,7 +7164,7 @@ cmd_help_client_expired() {
 
 Your license expired (aegis account shows it). Until it is extended, these
 still work so your data is never stranded:
-  backup [--dest <dir>]       Back up code, memories and Engram
+  backup [--dest <dir>]       Back up code and Engram
   export <path> [--dest <dir>]      Copy a file out of the workstation
   stop                        Stop it (your files and sessions are kept)
   down                        Remove the containers (volumes are kept)
@@ -7545,246 +7180,52 @@ cmd_help_client_unlicensed() {
 aegis — Aegis Workstation (client)
 
 This machine has no valid license yet. Activate it first:
-  aegis account activate <license-id>
+  aegis license activate <license-id>
 
 Usage: aegis <command> [options]
 
   version                     Print the product version
-  account [--file <path>]     Verify the signed license offline and show what it
+  license [--file <path>]     Verify the signed license offline and show what it
                               entitles, or the reason it was refused
-  account activate <license-id> [--url <url>]
+                              (alias: `aegis account`, kept for muscle memory)
+  license activate <license-id> [--url <url>]
                               Claim a seat for this machine from the licensing
                               service and store the signed license
-  account renew               Re-sign this machine's license under the current key
-  account heartbeat           Tell the service this machine is alive
-  account retire --yes        Free this machine's seat and delete its local files
+  license renew               Re-sign this machine's license under the current key
+  license heartbeat           Tell the service this machine is alive
+  license retire --yes        Free this machine's seat and delete its local files
   help, -h, --help            This help
 
 Docs: docs/11-aegis-cli.md
 EOF
 }
 
-# The owner/developer document: everything this launcher can do (the client
-# subset plus the commands coupled to the checkout). The `name: ...` tool line
-# inside the heredoc is part of the tool-list sync contract (see ALL_TOOLS).
-cmd_help_dev() {
-    cat <<'EOF'
-aegis — Aegis Workstation launcher
-
-Usage: aegis <command> [options]
-
-Workstation
-  up                          Download the licensed image, verify its signature,
-                              then start the workstation
-    --build                   Build locally instead (no download, no signature:
-                              the maintainer path)
-  stop                        Stop it (your files and sessions are kept)
-  down                        Remove the containers (volumes are kept)
-  status                      What is running, resource use, volume sizes, last backup
-  version                     Print the product version (aegis and its image)
-  audit                       Check the security posture (PASS / FAIL)
-  install [--from <folder>]   Copy compose, Dockerfile and scripts to
-                              ~/.aegis/workstation (outside every mount) and run
-                              that copy from then on — so nothing the host
-                              executes lives where the workstation can reach it
-  update [--dry-run]          Bring the launcher and the configuration up to
-                              date from the checkout. Shows what changes, asks
-                              before applying, and only fast-forwards
-
-Work inside
-  shell [path]                Open a terminal under /workspace/<path>
-  herdr [path]                Open herdr under /workspace/<path>
-    --secret <name>           Inject one vault secret into this session only
-                              (removed when the session ends; metadata in
-                              keys/<name>.host and keys/<name>.known_hosts)
-    --tunnel <host>:<port>[:<localPort>]
-                              Repeatable: a localhost tunnel inside the session
-                              for TCP clients that cannot use a proxy (usql,
-                              psql, redis-cli). The allow rule is still the
-                              gate — a window (`allow add --port <n> --for <T>`)
-                              with the host listed, or a pair already in the
-                              store; without it the tunnel connects and dies.
-                              Dies with the session.
-                              A window created WITH --to <host> opens its own
-                              tunnel at session start (localhost:<n> ->
-                              <host>:<n>); an explicit --tunnel on that same
-                              localhost port wins over the automatic one.
-    --cmd <command>           Run a single command instead of a terminal (or: -- <command>)
-
-Sandbox
-  sandbox <repo>              Boot a disposable, per-repo container with only
-                              <repo> mounted and model-endpoints-only egress,
-                              and enter it
-    --gvisor                  Use the gVisor (runsc) runtime for this container.
-                              Fail-closed: if runsc is not registered with the
-                              daemon, nothing is started (no silent runc)
-    --env <name>              Load one vault env file (KEY=VALUE) into this
-                              session only; repeatable. The name must be in
-                              ~/.aegis/sandbox/allowed-envs — EMPTY by default,
-                              so nothing is injected until you name it
-    --secret <name>           Inject vault secret <name> as environment variable
-                              <name> for this session only; repeatable. Same
-                              allowlist. Values never touch persistent storage
-    --cmd <command>           Run a single command instead of a terminal (or: -- <command>)
-  promote <repo>              Copy an evaluated sandbox repo into the
-                              workstation's code volume, then tear the sandbox
-                              down (copy first, destroy second)
-    --to <destino>            Destination under code/ (default: the repo name)
-    --force                   Replace the destination if it already exists
-    --allow-dirty             Promote even with uncommitted changes
-
-Languages
-  env list                    Languages, versions and tools you have
-  add environment <lang> [version...]
-                              Add a language (no version: pick from a menu)
-                              lang: java, dotnet, node, go, python, cpp
-  remove environment <lang> [version]
-                              Remove a language or one of its versions
-  add tool <name>             Add an opt-in CLI to the workstation
-  remove tool <name>          Take it out of the image again
-                              name: gh, az, railway, chromium (no name: list them, on/off)
-  env rebuild                 Rebuild the workstation from your language list
-    --verbose                 Any of the commands above: show the raw build log
-                              instead of one line per step. The complete log
-                              always goes to ~/.aegis/logs/build-<date>.log
-
-The license
-  license [--file <path>]          Verify the signed license offline and show
-                                   what it entitles (customer, seats, expiry,
-                                   features), or the reason it was refused.
-                                   `aegis account` is the same command
-  license activate <license-id> [--url <url>]
-                              Claim a seat for this machine from the licensing
-                              service and store the signed license. The device
-                              credential is stored only when the service issues
-                              one that works — it is handed over only once
-  license renew               Ask the service to re-sign this machine's license
-                              under the key it signs with now (the step a key
-                              rotation requires). The old file is kept beside it
-                              as license.bak-<timestamp>, and a license this
-                              machine cannot verify is refused without touching
-                              the working one
-  license heartbeat           Tell the service this machine is alive; prints
-                              when it last saw it
-  license retire --yes        Free this machine's seat and delete its local
-                              license and credential. Needs --yes: after it,
-                              `aegis license` reports no license at all
-
-  image pull [--tag <tag>]    Pull the licensed image from our own registry
-                              (default tag: main). It asks the service for a
-                              download token first, because without a live one
-                              there is no image; the token never reaches the
-                              terminal, and docker's credential store is kept in
-                              a throwaway directory instead of ~/.docker
-  image verify [--tag <tag>]  Prove, before anything runs it, that the image
-                              here was signed by this project's CI. Keyless, so
-                              what it checks is an IDENTITY and an ISSUER
-                              rather than a key we would have to distribute,
-                              and it verifies the DIGEST: a tag can be moved,
-                              the bytes that would run cannot
-
-Secrets
-  secret list                 What is in the vault: names, sizes and dates of the
-                              secret side — never content
-  secret show <name>          Print ONE secret's content, after a confirmation
-  secret put <name> --from <host-file>
-                              Write a file into the vault (REPLACES if it exists)
-  secret put <name> --stdin   Same seal from a pipe (cat <file> | aegis ...)
-  secret host set <name> [--host H] [--user U] [--known-hosts-from FILE ...]
-                              Write an existing key's sidecars, sealed (T39.1)
-  secret rm <name>            Remove one secret (no undo: the vault is not backed up)
-
-  allow list                  The egress allowlist: your own entries (with reason,
-                              date and expiry) and where every other one comes from
-                              (fixed, or by language when that language is active)
-  allow add <domain>          Reach one more place (from the host only):
-    --reason "..."              why it is there; `allow list` shows it back
-    --for 30m|2h|7d             let it expire by itself (default: it does not)
-    --ip                        only for a bare IP, which has to be asked for
-  allow add --port <n> --for 30m|2h|7d [--to <host>] [--reason "..."]
-                              (T40.3) a PORT WINDOW, no host: that port opens
-                                for EVERY host already in the allowlist while
-                                it lives — like an NSG rule over your own list.
-                                --for is mandatory: a window that never
-                                expires is refused. Destinations never widen:
-                                the gate stays the allowlist, never "any".
-                                (T40.4) --to seeds the window's AUTO-TUNNEL:
-                                every session then binds localhost:<n> ->
-                                <host>:<n> (an explicit --tunnel on that local
-                                port wins over it; without --to nothing is
-                                tunneled). One window per port: re-adding --port
-                                <n> REPLACES it, seed included. Expired windows
-                                delete themselves from the store on the next
-                                'aegis allow' or 'aegis up' — real GC, not a
-                                skip-at-generate.
-  allow remove <domain>       Take one of your own entries back out
-  allow remove --port <n>     (T40.3) take that port window back out
-  allow reload                Re-apply the allowlist to the running proxy:
-                              squid re-reads it in place, so nothing is
-                              recreated and no connection is dropped
-  allow denied                What the proxy actually blocked, read from its own
-                              log, with the command to add each one printed
-  allow test <url>            Would the proxy let this through? The loaded list
-                              first, then a real probe through the proxy
-
-Personal profile
-  profile use <path|name>     Store the chosen OpenCode provider profile in
-                              the memories volume (it survives a home/config
-                              recreation and rides `aegis backup`) and apply
-                              it now; a name resolves under
-                              /usr/local/share/aegis/profiles/. API keys are
-                              refused: they belong in /connect, not here.
-  profile show                Stored path, provider names, applied vs pending.
-  profile clear               Remove the stored profile (live config untouched).
-
-Files and backups
-  backup [--dest <dir>]       Back up code, memories and Engram (note: a
-                              project's .env files travel inside the code volume)
-  restore <archive>           Restore a backup (stop the workstation first)
-  export <path> [--dest <dir>]      Copy a file out of the workstation
-  import <host-path> <path>         Copy a file into the workstation
-
-Windows installers
-  build windows <path>.iss    Compile an Inno Setup script (code/<Cliente>/<repo>/...
-                              or memories/<proyecto>/...) in a throwaway Wine
-                              container: no network, read-only, only that project
-                              mounted (Docker Engine 26+). The .exe lands in
-                              Output/ next to the .iss; take it out with `aegis export`
-  build clean                 Remove the build-windows image (rebuilt on next use)
-
-Databases
-  connect [network]           Join an internal network to reach database containers
-  disconnect [network]        Leave it
-
-Telemetry (opt-in, off by default)
-  telemetry status            Whether it is on, where it goes (never the token)
-  telemetry on                Turn it on: sends to Vangen's fixed collector
-  telemetry off               Turn it off and forget the token
-                              Sent: command name, ok/error, duration, launcher
-                              version, OS, a random install id, language versions.
-                              Never: arguments, paths, names, secrets.
-                              AEGIS_TELEMETRY=off disables it regardless.
-
-Examples
-  aegis shell --env auto code/my-repo
-  aegis shell code/my-repo --cmd git status
-  aegis add environment java
-  aegis backup
-
-Docs: docs/11-aegis-cli.md
-EOF
+# The one document: every command this launcher runs day to day.
+# Client-redesign L5: the VANGEN welcome banner. Shown exactly twice --
+# after a successful `aegis install` and on bare `aegis` (the interactive
+# welcome). Never on explicit `aegis help`, `status`, or any other output:
+# noise over information. Color only when stdout is a TTY.
+_aegis_banner() {
+    [[ -t 1 ]] && printf '\e[1;32m'
+    cat <<'AEGIS_BANNER'
+██╗   ██╗██████╗ ███╗   ██╗██████╗ ██████╗ ███╗   ██╗
+██║   ██║██╔══██╗████╗  ██║██╔════╝██╔════╝ ████╗  ██║
+██║   ██║███████║██╔██╗ ██║██║  ███╗█████╗   ██╔██╗ ██║
+╚██╗ ██╔╝██╔══██║██║╚██╗██║██║   ██║██╔══╝   ██║╚██╗██║
+ ╚████╔╝ ██║  ██║██║ ╚████║╚██████╔╝███████╗██║ ╚████║
+  ╚═══╝  ╚═╝  ╚═╝╚═╝  ╚═══╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝
+AEGIS_BANNER
+    if [[ -t 1 ]]; then printf '\e[0m'; fi
+    return 0
 }
 
-# The client document: only the commands a client runs day to day. It is a
-# different document for a different audience, so it is worded for the client
-# and deliberately leaves out the owner-only commands that _client_reject names.
 cmd_help_client() {
     cat <<'EOF'
-aegis — Aegis Workstation (client)
+aegis — Aegis Workstation
 
 Usage: aegis <command> [options]
 
-Workstation
+Empezar
   install                     Download the licensed configuration bundle for this
                               machine, verify it, and install it (needs an
                               active license)
@@ -7800,7 +7241,7 @@ Workstation
                               remove the previous images. Volumes are kept.
   audit                       Check the security posture (PASS / FAIL)
 
-Work inside
+Trabajar
   shell [path]                Open a terminal under /workspace/<path>
   herdr [path]                Open herdr under /workspace/<path>
     --secret <name>           Inject one vault secret into this session only
@@ -7809,56 +7250,16 @@ Work inside
                               for TCP clients that cannot use a proxy; the T40
                               allow rule is still the gate
     --cmd <command>           Run a single command instead of a terminal (or: -- <command>)
+  profile use <path|name>     Store the chosen OpenCode provider profile in
+                              the code volume (survives a home/config
+                              recreation, rides `aegis backup`) and apply it
+                              now; it re-applies automatically on the next
+                              configure. API keys belong in /connect, never
+                              in a profile.
+  profile show                Stored path, provider names, applied vs pending.
+  profile clear               Remove the stored profile (live config untouched).
 
-Sandbox
-  sandbox <repo>              Boot a disposable, per-repo container with only
-                              <repo> mounted and model-endpoints-only egress
-    --gvisor                  Use the gVisor (runsc) runtime for this container
-    --env <name>              Load one vault env file into this session only
-    --secret <name>           Inject vault secret <name> as an environment variable
-    --cmd <command>           Run a single command instead of a terminal (or: -- <command>)
-  promote <repo>              Copy an evaluated sandbox repo into the
-                              workstation's code volume, then tear the sandbox
-                              down (copy first, destroy second)
-    --to <destino>            Destination under code/ (default: the repo name)
-    --force                   Replace the destination if it already exists
-    --allow-dirty             Promote even with uncommitted changes
-
-Languages and tools (built on top of the verified image, on this machine)
-  env list                    Languages, versions and tools you have
-  env list --remote <lang>    Versions available to add for one language
-  add environment <lang> [version...]
-                              Add a language (no version: pick from a menu)
-                              lang: java, dotnet, node, go, python, cpp
-  remove environment <lang> [version]
-                              Remove a language or one of its versions
-  add tool <name>             Add an opt-in CLI to the workstation
-  remove tool <name>          Take it out of the image again
-                              name: gh, az, railway, chromium (no name: list them, on/off)
-    --verbose                 Any of the commands above: show the raw build log
-
-The license
-  account [--file <path>]     Verify the signed license offline and show what it
-                              entitles, or the reason it was refused
-  account activate <license-id> [--url <url>]
-                              Claim a seat for this machine from the licensing
-                              service and store the signed license
-  account renew               Re-sign this machine's license under the current key
-  account heartbeat           Tell the service this machine is alive
-  account retire --yes        Free this machine's seat and delete its local files
-
-  image pull [--tag <tag>]    Pull the licensed image from our own registry
-  image verify [--tag <tag>]  Prove the local image was signed by this project's CI
-
-Secrets
-  secret list                 What is in the vault (names, sizes and dates)
-  secret show <name>          Print ONE secret's content, after a confirmation
-  secret put <name> --from <host-file>
-                              Write a file into the vault (REPLACES if it exists)
-  secret put <name> --stdin   Same seal from a pipe (cat <file> | aegis ...)
-  secret host set <name> ...  Write an existing key's sidecars, sealed (T39.1)
-  secret rm <name>            Remove one secret (no undo)
-
+Red
   allow list                  The egress allowlist
   allow add <domain>          Reach one more place (from the host only)
     --reason "..."              why it is there; `allow list` shows it back
@@ -7874,36 +7275,64 @@ Secrets
   allow reload                Re-apply the allowlist to the running proxy
   allow denied                What the proxy actually blocked
   allow test <url>            Would the proxy let this through?
+  net connect [network]       Join an internal network to reach database containers
+  net disconnect [network]    Leave it (alias: `aegis connect`, kept)
+  sandbox <repo>              Boot a disposable, per-repo container with only
+                              <repo> mounted and model-endpoints-only egress
+    --gvisor                  Use the gVisor (runsc) runtime for this container
+    --env <name>              Load one vault env file into this session only
+    --secret <name>           Inject vault secret <name> as an environment variable
+    --cmd <command>           Run a single command instead of a terminal (or: -- <command>)
+  promote <repo>              Copy an evaluated sandbox repo into the
+                              workstation's code volume, then tear the sandbox
+                              down (copy first, destroy second)
+    --to <destino>            Destination under code/ (default: the repo name)
+    --force                   Replace the destination if it already exists
+    --allow-dirty             Promote even with uncommitted changes
 
-Personal profile
-  profile use <path|name>     Store the chosen OpenCode provider profile in
-                              the memories volume (survives a home/config
-                              recreation, rides `aegis backup`) and apply it
-                              now; it re-applies automatically on the next
-                              configure. API keys belong in /connect, never
-                              in a profile.
-  profile show                Stored path, provider names, applied vs pending.
-  profile clear               Remove the stored profile (live config untouched).
-
-Files and backups
-  backup [--dest <dir>]       Back up code, memories and Engram
+Tus datos
+  secret list                 What is in the vault (names, sizes and dates)
+  secret show <name>          Print ONE secret's content, after a confirmation
+  secret put <name> --from <host-file>
+                              Write a file into the vault (REPLACES if it exists)
+  secret put <name> --stdin   Same seal from a pipe (cat <file> | aegis ...)
+  secret host set <name> ...  Write an existing key's sidecars, sealed (T39.1)
+  secret rm <name>            Remove one secret (no undo)
+  backup [--dest <dir>]       Back up code and Engram
   restore <archive>           Restore a backup (stop the workstation first)
   export <path> [--dest <dir>]      Copy a file out of the workstation
   import <host-path> <path>         Copy a file into the workstation
 
-Windows installers
-  build windows <path>.iss    Compile an Inno Setup script (code/<Cliente>/<repo>/...
-                              or memories/<proyecto>/...) in a throwaway Wine
+Licencia
+  license [--file <path>]     Verify the signed license offline and show what it
+                              entitles, or the reason it was refused
+                              (alias: `aegis account`, kept for muscle memory)
+  license activate <license-id> [--url <url>]
+                              Claim a seat for this machine from the licensing
+                              service and store the signed license
+  license renew               Re-sign this machine's license under the current key
+  license heartbeat           Tell the service this machine is alive
+  license retire --yes        Free this machine's seat and delete its local files
+  image verify [--tag <tag>]  Prove the local image was signed by this project's CI
+
+Mantener
+  env list                    Languages, versions and tools you have
+  env list --remote <lang>    Versions available to add for one language
+  add environment <lang> [version...]
+                              Add a language (no version: pick from a menu)
+                              lang: java, dotnet, node, go, python, cpp
+  remove environment <lang> [version]
+                              Remove a language or one of its versions
+  add tool <name>             Add an opt-in CLI to the workstation
+  remove tool <name>          Take it out of the image again
+                              name: gh, az, railway, chromium (no name: list them, on/off)
+
+  build windows <path>.iss    Compile an Inno Setup script (code/<Cliente>/<repo>/...)
+                              in a throwaway Wine
                               container: no network, read-only, only that project
                               mounted (Docker Engine 26+). The .exe lands in
                               Output/ next to the .iss; take it out with `aegis export`
   build clean                 Remove the build-windows image (rebuilt on next use)
-
-Databases
-  connect [network]           Join an internal network to reach database containers
-  disconnect [network]        Leave it
-
-Telemetry (opt-in, off by default)
   telemetry status            Whether it is on, where it goes (never the token)
   telemetry on                Turn it on: sends to Vangen's fixed collector
   telemetry off               Turn it off and forget the token
@@ -8070,9 +7499,8 @@ _update_step_with_eta() {
 }
 
 # ---------------------------------------------------------------------------
-# client-license-surface S3: the client's `aegis update`. The owner's update
-# (cmd_update) follows its checkout; a client has none, so it moves to the
-# latest SIGNED bundle and image instead:
+# client-license-surface S3: `aegis update` moves to the latest SIGNED bundle
+# and image:
 #   1. aegis install            — the latest signed configuration bundle
 #   2. the client CLI next to this one, atomically, with .bak copies
 #   3. `aegis up` of the NEW CLI, in a fresh process (so it reads the new
@@ -8106,9 +7534,8 @@ _remove_old_image() {
 # into AEGIS_BIN_DIR when the caller set it), so the command the user actually
 # types is the one updated. Fail-closed and all-or-nothing: every entry is
 # staged BESIDE its target first, and only when all of them are ready are they
-# renamed into place (the running script keeps its own inode, as in the
-# owner's update). Never aegis-dev* (aegis-cli's release never carries those
-# dev-only helpers in the first place, so there is nothing left to exclude).
+# renamed into place (the running script keeps its own inode: copying straight
+# onto the target would truncate the file bash is reading from mid-run).
 _client_bin_dir() {
     if [[ -n "$AEGIS_BIN_DIR_EXPLICIT" ]]; then
         printf '%s' "${AEGIS_BIN_DIR%/}"
@@ -8395,7 +7822,7 @@ cmd_update_client() {
         # `aegis update` invocation never carries this var, so it reads
         # STAGE=2 alone as "the previous attempt died before cleanup" and
         # correctly re-runs step 1 instead of skipping it.
-        exec env "${child_env[@]}" AEGIS_UPDATE_HANDOFF=1 AEGIS_CLI_MODE=client bash "${bin_dir}/aegis" update
+        exec env "${child_env[@]}" AEGIS_UPDATE_HANDOFF=1 bash "${bin_dir}/aegis" update
     fi
 
     _update_step_with_eta 3 "Starting new version (download + verify; rebuilding image if needed)" START
@@ -8407,7 +7834,7 @@ cmd_update_client() {
     old_env_ids="$(docker images --format '{{.ID}}' "$AEGIS_ENV_IMAGE_REPO" | tr '\n' ' ')"
     _update_log "INFO" "Found $( echo $old_env_ids | wc -w ) previous developer images"
     _update_step_with_eta 3 "Starting new version (download + verify; rebuilding image if needed)" 45 "3.2 MB/s"
-    if ! env "${child_env[@]}" AEGIS_CLI_MODE=client bash "${bin_dir}/aegis" up; then
+    if ! env "${child_env[@]}" bash "${bin_dir}/aegis" up; then
         _update_log "ERROR" "Failed to start new version"
         err "the new version did not start — the previous images are kept, so nothing was removed."
         err "the new configuration and CLI are installed; the previous ones are in $(tildify "${AEGIS_INSTALL_DIR%/}").bak-<date> and $(tildify "$bin_dir")/*.bak-<date>."
@@ -8478,16 +7905,6 @@ cmd_update_client() {
 # Dispatch
 # ---------------------------------------------------------------------------
 
-# The client surface refuses a developer-only command out loud and names the
-# entrypoint that carries it — never a silent no-op that would look like it ran.
-# The argument is the command as the caller would write it after `aegis`.
-_client_reject() {
-    local cmd="$1"
-    err "'aegis ${cmd}' is a developer command — it is not part of the client CLI."
-    err "the owner runs it with 'aegis-dev ${cmd}' on the development machine."
-    exit 2
-}
-
 # client-license-surface S1: is this machine licensed? The same offline Ed25519
 # verification `aegis account` runs (aegis-license.js verify, exit 0 = valid);
 # an expired, tampered or missing license — or a missing helper/key file — is
@@ -8523,51 +7940,50 @@ _client_license_state() {
 _client_unlicensed() {
     local cmd="$1"
     err "'aegis ${cmd}' needs a license — this machine has no valid license."
-    err "activate it with: aegis account activate <license-id>   (aegis account shows why the current one was refused)"
+    err "activate it with: aegis license activate <license-id>   (aegis license shows why the current one was refused)"
     exit 2
 }
 
 main() {
+    # Bare `aegis` (no arguments at all) is the interactive welcome: banner
+    # first, then the help. An explicit `aegis help` stays pure information.
+    if [[ $# -eq 0 ]]; then
+        _aegis_banner
+    fi
     local sub="${1:-help}"
     [[ $# -gt 0 ]] && shift || true
 
-    if [[ "$AEGIS_CLI_MODE" == "client" ]]; then
-        _CLIENT_LICENSE_STATE="$(_client_license_state)"
-        # Owner-only commands first, so their refusal names the real reason
-        # (aegis-dev), licensed or not.
-        # add/remove environment|tool became client commands (client-license-
-        # surface S2): they build on the verified base by themselves. The explicit
-        # `env rebuild` stays the owner's (user decision 2026-10-14). `build`
-        # (Windows installers) became a client command too — it needs no
-        # dev-only dependency, and the bundle carries its template.
-        case "$sub" in
-            env)
-                [[ "${1:-list}" == "rebuild" ]] && _client_reject "env rebuild"
-                ;;
-            up)
-                local _a
-                for _a in "$@"; do
-                    [[ "$_a" == "--build" ]] && _client_reject "up --build"
-                done
-                ;;
-        esac
-        # S1: an ALLOW-list, so it fails closed — a command added to the
-        # dispatch below is gated without touching this block. Without a valid
-        # license only version/account/help answer; anything else (an unknown
-        # word included) is refused before it runs. Licensed, an unknown word
-        # still reaches "unknown command".
-        #
-        # A license that existed and EXPIRED must not strand the client's data
-        # (user decision 2026-10-14): backup/export/stop/down/status stay
-        # available for it, never for a machine that never had a valid one.
-        case "$sub" in
-            version|--version|account|help|-h|--help) ;;
-            backup|export|stop|down|status)
-                [[ "$(_client_license_state)" != "none" ]] || _client_unlicensed "$sub"
-                ;;
-            *) _client_licensed || _client_unlicensed "$sub" ;;
-        esac
-    fi
+    _CLIENT_LICENSE_STATE="$(_client_license_state)"
+    # S1: an ALLOW-list, so it fails closed — a command added to the
+    # dispatch below is gated without touching this block. Without a valid
+    # license only version/account/help answer; anything else (an unknown
+    # word included) is refused before it runs. Licensed, an unknown word
+    # still reaches "unknown command".
+    #
+    # A license that existed and EXPIRED must not strand the client's data
+    # (user decision 2026-10-14): backup/export/stop/down/status stay
+    # available for it, never for a machine that never had a valid one.
+    case "$sub" in
+        version|--version|account|license|help|-h|--help) ;;
+        backup|export|stop|down|status)
+            [[ "$(_client_license_state)" != "none" ]] || _client_unlicensed "$sub"
+            ;;
+        install)
+            # Client-redesign L4.2: `aegis install <license-id>` is the
+            # complete first journey — the activation runs inside the command,
+            # before anything is installed. Bare `install` unlicensed gets the
+            # journey explanation instead of the generic gate refusal.
+            if [[ -z "${1:-}" ]]; then
+                _client_licensed || {
+                    err "'aegis install' needs a license — run the first journey in one command:"
+                    err "  aegis install <license-id>"
+                    err "or the explicit two-step alternative: aegis license activate <license-id>"
+                    exit 2
+                }
+            fi
+            ;;
+        *) _client_licensed || _client_unlicensed "$sub" ;;
+    esac
 
     case "$sub" in
         up) cmd_up "$@" ;;
@@ -8575,8 +7991,18 @@ main() {
         herdr) cmd_herdr "$@" ;;
         sandbox) cmd_sandbox "$@" ;;
         promote) cmd_promote "$@" ;;
-        account) cmd_account "$@" ;;
-        license) cmd_license "$@" ;;
+        license) _LICENSE_CMD="license"; cmd_account "$@" ;;
+        account) _LICENSE_CMD="account"; cmd_account "$@" ;;
+        net)
+            case "${1:-}" in
+                connect) shift; cmd_connect "$@" ;;
+                disconnect) shift; cmd_disconnect "$@" ;;
+                *)
+                    err "unknown 'aegis net' subcommand: ${1:-<none>} (expected: aegis net connect|disconnect)"
+                    exit 2
+                    ;;
+            esac
+            ;;
         image) cmd_image "$@" ;;
         env) cmd_env "$@" ;;
         add)
@@ -8607,13 +8033,7 @@ main() {
             allow) cmd_allow "$@" ;;
             audit) cmd_audit "$@" ;;
         install) cmd_install "$@" ;;
-        update)
-            if [[ "$AEGIS_CLI_MODE" == "client" ]]; then
-                cmd_update_client "$@"
-            else
-                cmd_update "$@"
-            fi
-            ;;
+        update) cmd_update_client "$@" ;;
         secret) cmd_secret "$@" ;;
         profile) cmd_profile "$@" ;;
         telemetry) cmd_telemetry "$@" ;;
