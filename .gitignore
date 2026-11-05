@@ -26,3 +26,4 @@ dist/
 .env.local
 vendor/
 go.sum
+dist/

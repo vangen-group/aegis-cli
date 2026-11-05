@@ -4,10 +4,14 @@
 // server + assets + install.sh. No downloads happen here.
 import { execFileSync } from "node:child_process";
 import { cpSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
-const out = process.argv[process.argv.indexOf("--out") + 1];
-if (!out) { console.error("usage: node scripts/build-installer-bundles.mjs --out <dir>"); process.exit(1); }
+const outArg = process.argv[process.argv.indexOf("--out") + 1];
+if (!outArg) { console.error("usage: node scripts/build-installer-bundles.mjs --out <dir>"); process.exit(1); }
+// Absolute on purpose: the zip step runs with cwd=out, so a relative --out
+// would resolve against the wrong directory.
+const out = resolve(outArg);
+mkdirSync(out, { recursive: true });
 const root = process.cwd();
 const work = join(out, "Aegis CLI Installer");
 rmSync(work, { recursive: true, force: true });
@@ -36,9 +40,9 @@ for (const [zip] of [["aegis-installer-macos.zip"], ["aegis-installer-windows.zi
   // `zip` is not always installed (CI images, WSL minimal); fall back to
   // python3's zipfile module, which is present wherever python3 is.
   try {
-    execFileSync("zip", ["-q", "-r", join(out, zip), "Aegis CLI Installer"], { cwd: out });
+    execFileSync("zip", ["-q", "-r", zip, "Aegis CLI Installer"], { cwd: out });
   } catch {
-    execFileSync("python3", ["-m", "zipfile", "-c", join(out, zip), "Aegis CLI Installer"], { cwd: out });
+    execFileSync("python3", ["-m", "zipfile", "-c", zip, "Aegis CLI Installer"], { cwd: out });
   }
 }
 console.log(`bundles written to ${out}`);
