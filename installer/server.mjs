@@ -151,13 +151,12 @@ createServer(async (req, res) => {
   // T4: LUKS secure volume — state detection and READ-ONLY verification of
   // the provisioning steps. The passphrase never touches this server.
   if (url.pathname === "/api/volume/state") {
-    // The provisioning guide is DEV-only: clients receive volumes already
-    // provisioned (or point to support); creation steps never ship to them.
-    const isDev = process.env.AEGIS_INSTALLER_DEV === "1";
+    // S8 supersedes the old dev-only gate: clients DO provision — the wizard
+    // executes the steps for them (stdio inherit). Everyone gets the list;
+    // the dev flag only kept the old read-only flow around.
     return send(200, JSON.stringify({
       ...volumeState(),
-      dev: isDev,
-      provisioning: isDev ? PROVISIONING.map((p) => ({ id: p.id, text: p[planLang(req.headers.cookie)] || p.en })) : [],
+      provisioning: PROVISIONING.map((p) => ({ id: p.id, text: p[planLang(req.headers.cookie)] || p.en })),
     }), "application/json");
   }
   // T12 (S8): run a provisioning step FOR the client. stdio inherit means

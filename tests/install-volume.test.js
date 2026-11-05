@@ -42,12 +42,8 @@ test('the provisioning guide is bilingual and names the passphrase rule', () => 
     assert.match(PROVISIONING[2].es, /DESTRUCTIVO/);
 });
 
-test('the provisioning guide ships ONLY to dev runs (owner is the dev; clients never see creation steps)', () => {
-    // This is enforced server-side: AEGIS_INSTALLER_DEV=1 gates the guide.
+test('S8 supersedes the dev-only gate: EVERYONE gets the provisioning list (the wizard provisions for the client)', () => {
     const src = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'installer', 'server.mjs'), 'utf8');
-    assert.match(src, /AEGIS_INSTALLER_DEV === "1"/, 'the dev flag must gate the provisioning list');
-    assert.match(src, /provisioning: isDev \?/, 'clients must get an empty provisioning list');
-    // And the UI must not render the guide when the list is empty.
-    const assets = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'installer', 'assets.mjs'), 'utf8');
-    assert.match(assets, /provisioning is performed by the Vangen team|lo realiza el equipo de Vangen/, 'client build must point to support instead of creation steps');
+    assert.ok(!src.includes('AEGIS_INSTALLER_DEV === "1"'), 'the dev-only gate must be gone');
+    assert.match(src, /provisioning: PROVISIONING.map/, 'the provisioning list ships to every wizard run');
 });
