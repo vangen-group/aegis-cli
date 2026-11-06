@@ -5947,6 +5947,14 @@ cmd_backup() {
     manifest_name="aegis-workstation-backup-${ts}.manifest.json"
 
     log "backing up the code and engram volumes -> ${dest%/}/${archive_name}"
+    # T5c (luks-integration): the backup covers ONLY code and engram. In
+    # encrypted mode the other sensitive volumes are separate binds, so a
+    # "backup ok" that silently leaves them out is the worst possible report.
+    # Say it, out loud, before the work starts.
+    if [[ -n "${AEGIS_DATA_ROOT:-}${AEGIS_HOME_DIR:-}${AEGIS_CLAUDE_DIR:-}${AEGIS_OPENCODE_DIR:-}${AEGIS_GENTLE_AI_DIR:-}${AEGIS_HERDR_DIR:-}" ]]; then
+        log "NOT included in this backup: the agent state volumes (home, claude, opencode, gentle-ai, herdr)."
+        log "They live outside this archive — copy them yourself if you are migrating them."
+    fi
     log "(throwaway container, read-only mounts, --network none — never touches the home/config volumes)."
 
     # File counts computed from the SAME read-only mounts, before archiving,
