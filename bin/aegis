@@ -473,6 +473,38 @@ engram_volume_src() {
     esac
 }
 
+# T8 (luks-integration L9): compose asks for 20 CPUs and 24 GB by default. On
+# a daemon that offers less (Docker Desktop on a laptop, a small WSL2 VM) the
+# stack fails or comes up half-configured — and the user has no idea
+# AEGIS_DEV_CPUS exists. Clamp the DEFAULTS to what the daemon actually offers;
+# an explicit override is still honoured, clamped with a notice instead of a
+# silent failure.
+resolve_resource_limits() {
+    local want_cpus="${AEGIS_DEV_CPUS:-20}" want_mem="${AEGIS_DEV_MEMORY:-24g}"
+    local info ncpu memtotal
+    info="$(docker info --format '{{.NCPU}} {{.MemTotal}}' 2>/dev/null)" || return 0
+    read -r ncpu memtotal <<<"${info:-}"
+    case "${ncpu:-}" in ''|*[!0-9]*) return 0 ;; esac
+    case "${memtotal:-}" in ''|*[!0-9]*) return 0 ;; esac
+
+    local mem_gb=$(( memtotal / 1073741824 ))
+    local eff_cpus="$want_cpus" eff_mem_gb="${want_mem%[gG]}"
+    case "$eff_mem_gb" in ''|*[!0-9]*) eff_mem_gb=24 ;; esac
+
+    if (( want_cpus > ncpu )); then
+        eff_cpus="$ncpu"
+        log "resources: the daemon offers ${ncpu} CPU(s) — using ${eff_cpus} (requested ${want_cpus})."
+    fi
+    # Leave the daemon one gigabyte of headroom; never ask for zero.
+    local max_mem=$(( mem_gb > 2 ? mem_gb - 1 : mem_gb ))
+    (( max_mem < 1 )) && max_mem=1
+    if (( eff_mem_gb > max_mem )); then
+        log "resources: the daemon offers ${mem_gb}G — using ${max_mem}g (requested ${want_mem})."
+        eff_mem_gb="$max_mem"
+    fi
+    export AEGIS_DEV_CPUS="$eff_cpus" AEGIS_DEV_MEMORY="${eff_mem_gb}g"
+}
+
 # resolve_data_path returns the logical volume IDENTITY (VOL_CODE for code),
 # which promote/verify compare against. The docker `-v` flag needs the SOURCE,
 # so every mount goes through this mapper.
@@ -1292,6 +1324,9 @@ cmd_up() {
 
     # T3: never start on top of a sealed vault (see the helper above).
     require_vault_if_code_dir_is_a_bind || exit 1
+
+    # T8: fit the stack's defaults to the daemon instead of assuming a big one.
+    resolve_resource_limits
 
     # T29: the image now comes from the registry, so it is proven BEFORE compose
     # is allowed to start anything. Leaving verification out of the start path
