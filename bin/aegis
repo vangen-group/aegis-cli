@@ -407,14 +407,32 @@ require_vault_if_code_dir_is_a_bind() {
 # AEGIS_DATA_ROOT points inside the mounted vault, each volume becomes a host
 # bind under it (compose already accepts the per-volume overrides) and the
 # caches stay named volumes — they are regenerable, not data.
+# Reads one key from the launcher state (.devcontainer/.env). The state is what
+# makes the encrypted choice survive a new terminal: the environment variable is
+# a convenience, not the source of truth.
+state_get() {
+    local key="$1" file="${AEGIS_WORKSTATION_DIR%/}/.devcontainer/.env"
+    [[ -f "$file" ]] || return 0
+    sed -n "s/^${key}=//p" "$file" 2>/dev/null | head -n1
+}
+
 derive_data_root() {
     local root="${AEGIS_DATA_ROOT:-}"
+    # T9: an explicit AEGIS_ENCRYPTED=0 turns the mode OFF; otherwise a root
+    # recorded by a previous run keeps it ON without re-exporting anything.
+    if [[ "${AEGIS_ENCRYPTED:-}" == "0" ]]; then
+        return 0
+    fi
+    [[ -n "$root" ]] || root="$(state_get AEGIS_DATA_ROOT)"
     [[ -n "$root" ]] || return 0
     case "$root" in
         /*) ;;
         *) err "AEGIS_DATA_ROOT must be an absolute path (got: $root)"; return 1 ;;
     esac
     root="${root%/}"
+    # The resolved root becomes the effective one, so the writer records it even
+    # when it came from the state and not from this shell.
+    export AEGIS_DATA_ROOT="$root"
     : "${AEGIS_CODE_DIR:=${root}/workspace}"
     : "${AEGIS_HOME_DIR:=${root}/home}"
     : "${AEGIS_CLAUDE_DIR:=${root}/claude}"
@@ -426,6 +444,44 @@ derive_data_root() {
         AEGIS_GENTLE_AI_DIR AEGIS_ENGRAM_DIR AEGIS_HERDR_DIR
 }
 
+# T5c (luks-integration): the sensitive state beyond code/engram. `home` is the
+# /home/dev volume and CONTAINS the four specific ones, so it is always
+# archived with explicit exclusions — otherwise the archive duplicates them and
+# a restore would overwrite itself.
+_vol_or_dir() {
+    local dir="${1:-}"
+    case "$dir" in
+        */*) printf '%s' "$dir" ;;
+        *) printf '%s' "$2" ;;
+    esac
+}
+
+# True when the user opted into the encrypted layout (any per-volume dir set).
+agent_state_mode() {
+    [[ -n "${AEGIS_DATA_ROOT:-}${AEGIS_HOME_DIR:-}${AEGIS_CLAUDE_DIR:-}${AEGIS_OPENCODE_DIR:-}${AEGIS_GENTLE_AI_DIR:-}${AEGIS_HERDR_DIR:-}" ]]
+}
+
+# id -> docker source for the agent-state volumes.
+agent_state_source() {
+    case "$1" in
+        home)      _vol_or_dir "${AEGIS_HOME_DIR:-}" aegis-workstation-home ;;
+        claude)    _vol_or_dir "${AEGIS_CLAUDE_DIR:-}" aegis-workstation-claude-config ;;
+        opencode)  _vol_or_dir "${AEGIS_OPENCODE_DIR:-}" aegis-workstation-opencode-config ;;
+        gentle-ai) _vol_or_dir "${AEGIS_GENTLE_AI_DIR:-}" aegis-workstation-gentle-ai-state ;;
+        herdr)     _vol_or_dir "${AEGIS_HERDR_DIR:-}" aegis-workstation-herdr-state ;;
+        *) return 1 ;;
+    esac
+}
+
+# One "id<TAB>source" line per agent-state volume.
+agent_state_rows() {
+    printf 'home\t%s\n'      "$(_vol_or_dir "${AEGIS_HOME_DIR:-}" aegis-workstation-home)"
+    printf 'claude\t%s\n'     "$(_vol_or_dir "${AEGIS_CLAUDE_DIR:-}" aegis-workstation-claude-config)"
+    printf 'opencode\t%s\n'   "$(_vol_or_dir "${AEGIS_OPENCODE_DIR:-}" aegis-workstation-opencode-config)"
+    printf 'gentle-ai\t%s\n'  "$(_vol_or_dir "${AEGIS_GENTLE_AI_DIR:-}" aegis-workstation-gentle-ai-state)"
+    printf 'herdr\t%s\n'      "$(_vol_or_dir "${AEGIS_HERDR_DIR:-}" aegis-workstation-herdr-state)"
+}
+
 # The engram volume follows the same shape rule as the code volume (T1).
 engram_volume_src() {
     local dir="${AEGIS_ENGRAM_DIR:-}"
@@ -433,6 +489,38 @@ engram_volume_src() {
         */*) printf '%s' "$dir" ;;
         *) printf '%s' "$VOL_ENGRAM" ;;
     esac
+}
+
+# T8 (luks-integration L9): compose asks for 20 CPUs and 24 GB by default. On
+# a daemon that offers less (Docker Desktop on a laptop, a small WSL2 VM) the
+# stack fails or comes up half-configured — and the user has no idea
+# AEGIS_DEV_CPUS exists. Clamp the DEFAULTS to what the daemon actually offers;
+# an explicit override is still honoured, clamped with a notice instead of a
+# silent failure.
+resolve_resource_limits() {
+    local want_cpus="${AEGIS_DEV_CPUS:-20}" want_mem="${AEGIS_DEV_MEMORY:-24g}"
+    local info ncpu memtotal
+    info="$(docker info --format '{{.NCPU}} {{.MemTotal}}' 2>/dev/null)" || return 0
+    read -r ncpu memtotal <<<"${info:-}"
+    case "${ncpu:-}" in ''|*[!0-9]*) return 0 ;; esac
+    case "${memtotal:-}" in ''|*[!0-9]*) return 0 ;; esac
+
+    local mem_gb=$(( memtotal / 1073741824 ))
+    local eff_cpus="$want_cpus" eff_mem_gb="${want_mem%[gG]}"
+    case "$eff_mem_gb" in ''|*[!0-9]*) eff_mem_gb=24 ;; esac
+
+    if (( want_cpus > ncpu )); then
+        eff_cpus="$ncpu"
+        log "resources: the daemon offers ${ncpu} CPU(s) — using ${eff_cpus} (requested ${want_cpus})."
+    fi
+    # Leave the daemon one gigabyte of headroom; never ask for zero.
+    local max_mem=$(( mem_gb > 2 ? mem_gb - 1 : mem_gb ))
+    (( max_mem < 1 )) && max_mem=1
+    if (( eff_mem_gb > max_mem )); then
+        log "resources: the daemon offers ${mem_gb}G — using ${max_mem}g (requested ${want_mem})."
+        eff_mem_gb="$max_mem"
+    fi
+    export AEGIS_DEV_CPUS="$eff_cpus" AEGIS_DEV_MEMORY="${eff_mem_gb}g"
 }
 
 # resolve_data_path returns the logical volume IDENTITY (VOL_CODE for code),
@@ -1084,7 +1172,7 @@ write_compose_env() {
     if [[ -f "$env_file" ]] && grep -qx '# aegis:data-root' "$env_file" 2>/dev/null; then
         # Our block is in the file: own ALL of it, so unsetting AEGIS_DATA_ROOT
         # really returns to the named volumes.
-        strip_pat="AEGIS_DATA_ROOT=|AEGIS_CODE_DIR=|AEGIS_HOME_DIR=|AEGIS_CLAUDE_DIR=|AEGIS_OPENCODE_DIR=|AEGIS_GENTLE_AI_DIR=|AEGIS_ENGRAM_DIR=|AEGIS_HERDR_DIR="
+        strip_pat="AEGIS_ENCRYPTED=|AEGIS_DATA_ROOT=|AEGIS_CODE_DIR=|AEGIS_HOME_DIR=|AEGIS_CLAUDE_DIR=|AEGIS_OPENCODE_DIR=|AEGIS_GENTLE_AI_DIR=|AEGIS_ENGRAM_DIR=|AEGIS_HERDR_DIR="
     fi
     if [[ -f "$env_file" ]]; then
         keep="$(grep -v -E "^(AEGIS_IMAGE_(REGISTRY|REPO|TAG)=|AEGIS_DEV_IMAGE=|${strip_pat:+${strip_pat}|}AEGIS_MARK_KEEP=|# aegis:data-root$|# Generated by aegis up|# Read by docker compose on the VS Code path|# Launcher state: )" "$env_file" || true)"
@@ -1103,6 +1191,12 @@ write_compose_env() {
         # T2: only when the user opted into a data root (or set a per-volume
         # dir); otherwise compose falls back to the named volumes.
         local _wrote=0
+        if [[ -n "${AEGIS_DATA_ROOT:-}" || -n "$(state_get AEGIS_DATA_ROOT)" ]] \
+            && [[ "${AEGIS_ENCRYPTED:-}" != "0" ]]; then
+            printf '%s\n' '# aegis:data-root'
+            printf '%s\n' "AEGIS_ENCRYPTED=1"
+            _wrote=1
+        fi
         for _k in AEGIS_DATA_ROOT AEGIS_CODE_DIR AEGIS_HOME_DIR AEGIS_CLAUDE_DIR \
                   AEGIS_OPENCODE_DIR AEGIS_GENTLE_AI_DIR AEGIS_ENGRAM_DIR AEGIS_HERDR_DIR; do
             eval "_v=\${$_k:-}"
@@ -1254,6 +1348,9 @@ cmd_up() {
 
     # T3: never start on top of a sealed vault (see the helper above).
     require_vault_if_code_dir_is_a_bind || exit 1
+
+    # T8: fit the stack's defaults to the daemon instead of assuming a big one.
+    resolve_resource_limits
 
     # T29: the image now comes from the registry, so it is proven BEFORE compose
     # is allowed to start anything. Leaving verification out of the start path
@@ -5329,6 +5426,17 @@ install_sandbox_template() {
     fi
     cp -R "${src_native}" "${dst_native}"
 
+    # T7 (luks-integration): AGENTS.md is part of the signed bundle, so it is
+    # replaced on every update. When the user had edited it, the generic
+    # "backed up to" line above is too easy to miss — and what gets lost are
+    # their own rules. Name it, and say where the previous copy is.
+    if [[ -n "${backup:-}" && -f "${backup}/AGENTS.md" && -f "${dst_native}/AGENTS.md" ]] \
+        && ! cmp -s "${backup}/AGENTS.md" "${dst_native}/AGENTS.md"; then
+        log "AGENTS.md was replaced by the signed bundle — your previous copy is at:"
+        log "  ${backup}/AGENTS.md"
+        log "  keep your own rules in your repository (code/rules/...), not in this product file."
+    fi
+
     # What the launcher and the sandbox compose resolve from this folder, so a
     # half-copied tree is caught here instead of on the next `aegis sandbox`.
     local missing=0 f
@@ -5946,29 +6054,43 @@ cmd_backup() {
     archive_name="aegis-workstation-backup-${ts}.tar.gz"
     manifest_name="aegis-workstation-backup-${ts}.manifest.json"
 
-    log "backing up the code and engram volumes -> ${dest%/}/${archive_name}"
+    # T5c: in the encrypted layout the archive also carries the agent-state
+    # volumes, so a migration is one backup -> switch -> restore.
+    local -a mnts=(-v "$(code_volume_src):/data:ro" -v "$(engram_volume_src):/data/engram:ro")
+    local -a ids=(code engram)
+    if agent_state_mode; then
+        local _id _src
+        while IFS=$'\t' read -r _id _src; do
+            [[ -n "$_id" ]] || continue
+            mnts+=(-v "${_src}:/data/${_id}:ro")
+            ids+=("$_id")
+        done < <(agent_state_rows)
+        log "backing up the code, engram and agent-state volumes -> ${dest%/}/${archive_name}"
+    else
+        log "backing up the code and engram volumes -> ${dest%/}/${archive_name}"
+    fi
     log "(throwaway container, read-only mounts, --network none — never touches the home/config volumes)."
+
+    # `home` contains the four specific volumes when they are separate binds.
+    local -a excludes=(--exclude=home/.claude --exclude=home/.config
+                       --exclude=home/.gentle-ai --exclude=home/.engram --exclude=home/.herdr)
 
     # File counts computed from the SAME read-only mounts, before archiving,
     # so the manifest's counts and the archive's contents can never diverge.
     local counts
     counts="$(MSYS_NO_PATHCONV=1 docker run --rm --network none \
-        -v "$(code_volume_src):/data:ro" \
-        -v "$(engram_volume_src):/data/engram:ro" \
+        "${mnts[@]}" \
         "$BACKUP_IMAGE" sh -c '
-            for d in code engram; do
+            for d in "$@"; do
                 find "/data/$d" -type f 2>/dev/null | wc -l
             done
-        ')"
-    local count_code count_engram
-    count_code="$(sed -n '1p' <<<"$counts" | tr -d '[:space:]')"
-    count_engram="$(sed -n '2p' <<<"$counts" | tr -d '[:space:]')"
+        ' sh "${ids[@]}")"
 
     MSYS_NO_PATHCONV=1 docker run --rm --network none \
-        -v "$(code_volume_src):/data:ro" \
-        -v "$(engram_volume_src):/data/engram:ro" \
+        "${mnts[@]}" \
         -v "${dest}:/backup" \
-        "$BACKUP_IMAGE" tar czf "/backup/${archive_name}" -C /data code engram
+        "$BACKUP_IMAGE" tar czf "/backup/${archive_name}" -C /data \
+        "${excludes[@]}" "${ids[@]}"
 
     local archive_path="${dest%/}/${archive_name}"
     local sha256 size_bytes
@@ -5979,10 +6101,23 @@ cmd_backup() {
     # generated by this script itself or a fixed literal — never
     # user/archive-controlled content — so no JSON string-escaping is
     # needed).
-    printf '{\n  "timestamp": "%s",\n  "archive": "%s",\n  "sha256": "%s",\n  "size_bytes": %s,\n  "image": "%s",\n  "volumes": {"code": "%s", "engram": "%s"},\n  "file_counts": {"code": %s, "engram": %s}\n}\n' \
-        "$ts" "$archive_name" "$sha256" "$size_bytes" "$BACKUP_IMAGE" \
-        "$VOL_CODE" "$VOL_ENGRAM" \
-        "${count_code:-0}" "${count_engram:-0}" \
+    # T5c: manifest v2 carries every archived volume with its own count; v1
+    # consumers (older launchers) still read code/engram from this shape.
+    local counts_json volumes_json i n
+    counts_json=""; volumes_json=""
+    for i in "${!ids[@]}"; do
+        n="$(sed -n "$((i + 1))p" <<<"$counts" | tr -d '[:space:]')"
+        n="${n:-0}"
+        [[ -n "$counts_json" ]] && counts_json="${counts_json}, "
+        [[ -n "$volumes_json" ]] && volumes_json="${volumes_json}, "
+        counts_json="${counts_json}\"${ids[$i]}\": ${n}"
+        volumes_json="${volumes_json}\"${ids[$i]}\": \"backup\""
+    done
+    local _ver=1
+    agent_state_mode && _ver=2
+    printf '{\n  "version": %s,\n  "timestamp": "%s",\n  "archive": "%s",\n  "sha256": "%s",\n  "size_bytes": %s,\n  "image": "%s",\n  "volumes": {%s},\n  "file_counts": {%s}\n}\n' \
+        "$_ver" "$ts" "$archive_name" "$sha256" "$size_bytes" "$BACKUP_IMAGE" \
+        "$volumes_json" "$counts_json" \
         > "${dest%/}/${manifest_name}"
 
     printf '%s\n' "$ts" > "${dest%/}/.last-backup"
@@ -5992,7 +6127,12 @@ cmd_backup() {
     log "size: ${size_bytes} bytes"
     log "sha256: $sha256"
     log "manifest: ${dest%/}/${manifest_name}"
-    log "file counts — code=${count_code:-0} engram=${count_engram:-0}"
+    local _summary="" _n _i
+    for _i in "${!ids[@]}"; do
+        _n="$(sed -n "$((_i + 1))p" <<<"$counts" | tr -d '[:space:]')"
+        _summary="${_summary}${ids[$_i]}=${_n:-0} "
+    done
+    log "file counts — ${_summary% }"
 }
 
 cmd_restore() {
@@ -6002,7 +6142,7 @@ cmd_restore() {
     local only="" replace=0 force=0
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --only) [[ $# -ge 2 ]] || { err "--only requires a value (code|engram)"; exit 2; }; only="$2"; shift 2 ;;
+            --only) [[ $# -ge 2 ]] || { err "--only requires a value (code|engram|home|claude|opencode|gentle-ai|herdr)"; exit 2; }; only="$2"; shift 2 ;;
             --replace) replace=1; shift ;;
             --force) force=1; shift ;;
             *) err "unknown option: $1"; exit 2 ;;
@@ -6012,6 +6152,7 @@ cmd_restore() {
         err "archive not found: $archive"
         exit 1
     fi
+
     case "$only" in
         ""|code|engram) ;;
         memories)
@@ -6019,7 +6160,7 @@ cmd_restore() {
             err "Your old memories content lives under /workspace/code — see docs/10-workstation.md (single-code-volume)."
             exit 2
             ;;
-        *) err "--only must be one of: code, engram"; exit 2 ;;
+        *) err "--only must be one of: code, engram, home, claude, opencode, gentle-ai, herdr"; exit 2 ;;
     esac
 
     if is_up && [[ "$force" -ne 1 ]]; then
@@ -6045,7 +6186,16 @@ cmd_restore() {
         log "no manifest found next to archive ($manifest) — skipping sha256 verification."
     fi
 
+    # T5c slice 2: a v2 backup carries the agent-state volumes too. The manifest
+    # is what tells us (the archive itself is opaque), so a v1 keeps the old
+    # code+engram behavior and a v2 restores what it actually holds.
+    local _v2=0
+    if [[ -f "$manifest" ]] && grep -qE '"version"[[:space:]]*:[[:space:]]*2' "$manifest" 2>/dev/null \
+        && grep -q '"home"' "$manifest" 2>/dev/null; then
+        _v2=1
+    fi
     local -a members=(code engram)
+    [[ "$_v2" -eq 1 ]] && members=(code engram home claude opencode gentle-ai herdr)
     [[ -n "$only" ]] && members=("$only")
     local -a mounts=()
     local m
@@ -6056,7 +6206,17 @@ cmd_restore() {
             # member extracts straight into it); the engram volume mounts at
             # /data/engram exactly like before.
             code) mounts+=(-v "$(code_volume_src):/data") ;;
-            engram) mounts+=(-v "${VOL_ENGRAM}:/data/engram") ;;
+            engram) mounts+=(-v "$(engram_volume_src):/data/engram") ;;
+            # Same layout the backup used: each agent volume mounts at its own
+            # /data/<id> and the archive member of the same name extracts there.
+            *)
+                if agent_state_source "$m" >/dev/null 2>&1; then
+                    mounts+=(-v "$(agent_state_source "$m"):/data/${m}")
+                else
+                    err "unknown volume for --only: $m"
+                    exit 2
+                fi
+                ;;
         esac
     done
 
