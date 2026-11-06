@@ -70,6 +70,10 @@ function sandbox() {
     stub('losetup', `echo "losetup $*" >> "${dir}/calls"; [ -e "${dir}/no-loop" ] && exit 1; [ "$1" = --find ] && echo /dev/loop9; exit 0`);
     stub('cryptsetup', `echo "cryptsetup $*" >> "${dir}/calls"; cat > "${dir}/key-$2"`);
     for (const n of ['mkfs.ext4', 'mount', 'chown']) stub(n, `echo "${n} $*" >> "${dir}/calls"`);
+    // Real sudo (use_pty) runs a command with piped stdout in the BACKGROUND
+    // of its pty: any terminal access freezes it. setsid reproduces that —
+    // the command gets NO controlling terminal, so touching it fails loudly.
+    stub('sudo', `[ "$1" = -n ] && shift; [ -e "${dir}/sudo-expired" ] && exit 1; exec setsid -w "$@"`);
     return { dir, img: path.join(dir, 'aegis_secure_test.img'), mnt: path.join(dir, 'mnt_test'), bin };
 }
 
@@ -80,7 +84,7 @@ function runOnTty(box, { consent = true, answers = [] } = {}) {
     process.env.AEGIS_VOLUME_MNT = box.mnt;
     const file = path.join(box.dir, 'provision.sh');
     fs.writeFileSync(file, provisionAllScript({ consent, lang: 'es' }));
-    const child = spawn('script', ['-qec', `sh ${file} > ${box.dir}/markers`, '/dev/null'], {
+    const child = spawn('script', ['-qec', `sh ${file} 3> ${box.dir}/markers`, '/dev/null'], {
         env: { ...process.env, PATH: `${box.bin}:${process.env.PATH}` },
     });
     let screen = '', seen = 0;
@@ -111,7 +115,7 @@ test('console dialog: visible prompts, hidden passphrase, retry on short/mismatc
         assert.match(r.screen, /Muy corta/);
         assert.match(r.screen, /No coinciden/);
         assert.match(r.screen, /Frase confirmada/);
-        assert.match(r.screen, /Montado/);
+        assert.match(r.screen, /cifrado y montado/);
         assert.ok(!r.screen.includes(GOOD), 'the passphrase is never echoed on the console');
         assert.ok(!/YES|yes/.test(r.screen), 'no YES question');
         assert.match(r.calls, /cryptsetup luksFormat --batch-mode --key-file=- \/dev\/loop9/);
@@ -126,7 +130,7 @@ test('console dialog: visible prompts, hidden passphrase, retry on short/mismatc
     } finally { clean(box); }
 });
 
-test('giving up on the passphrase rolls back: no image, loop detached, Retry starts clean', { skip: !HAS_SCRIPT && 'needs util-linux script' }, async () => {
+test('giving up on the passphrase touches nothing: Retry starts clean', { skip: !HAS_SCRIPT && 'needs util-linux script' }, async () => {
     const box = sandbox();
     try {
         const r = await runOnTty(box, { answers: [GOOD, 'x'.repeat(12), GOOD, 'y'.repeat(12), GOOD, 'z'.repeat(12)] });
@@ -134,8 +138,8 @@ test('giving up on the passphrase rolls back: no image, loop detached, Retry sta
         assert.match(r.screen, /Demasiados intentos/);
         assert.match(r.markers, /\[fail\] passphrase/);
         assert.ok(!r.calls.includes('luksFormat'), 'nothing was formatted');
-        assert.match(r.calls, /losetup -d \/dev\/loop9/);
-        assert.ok(!fs.existsSync(box.img), 'the image this run created is removed');
+        assert.ok(!r.calls.includes('losetup'), 'giving up happens before any root work');
+        assert.ok(!fs.existsSync(box.img), 'no image is created');
     } finally { clean(box); }
 });
 
@@ -158,15 +162,29 @@ test('an existing image is never touched; no consent formats nothing', { skip: !
     } finally { clean(box); }
 });
 
-test('a losetup failure stops before the passphrase dialog and rolls back', { skip: !HAS_SCRIPT && 'needs util-linux script' }, async () => {
+test('a root failure rolls back and tells the user on the console', { skip: !HAS_SCRIPT && 'needs util-linux script' }, async () => {
     const box = sandbox();
     try {
         fs.writeFileSync(path.join(box.dir, 'no-loop'), '');
-        const r = await runOnTty(box);
+        const r = await runOnTty(box, { answers: [GOOD, GOOD] });
         assert.equal(r.code, 6);
         assert.match(r.markers, /\[fail\] loop/);
-        assert.ok(!r.screen.includes('Frase de paso'), 'never asks for a passphrase it cannot use');
-        assert.ok(!fs.existsSync(box.img));
+        assert.match(r.screen, /No se pudo crear el volumen/);
+        assert.match(r.markers, /\[fail\] loop/);
+        assert.ok(!r.calls.includes('cryptsetup'));
+        assert.ok(!fs.existsSync(box.img), 'rolled back');
+    } finally { clean(box); }
+});
+
+test('an expired sudo session fails fast, before asking for the passphrase', { skip: !HAS_SCRIPT && 'needs util-linux script' }, async () => {
+    const box = sandbox();
+    try {
+        fs.writeFileSync(path.join(box.dir, 'sudo-expired'), '');
+        const r = await runOnTty(box);
+        assert.equal(r.code, 7);
+        assert.match(r.markers, /\[fail\] sudo/);
+        assert.match(r.screen, /sudo no está activa/);
+        assert.ok(!r.screen.includes('Frase de paso'));
     } finally { clean(box); }
 });
 
@@ -177,7 +195,6 @@ test('per-step luksFormat keeps passphrase verification (-y) alongside --batch-m
 
 test('wizard e2e: banner only while the console waits, a failed run explains itself and Retry works', { skip: !HAS_SCRIPT && 'needs util-linux script', timeout: 60000 }, async () => {
     const box = sandbox();
-    fs.writeFileSync(path.join(box.bin, 'sudo'), '#!/bin/sh\nexec "$@"\n', { mode: 0o755 });
     const port = 19464 + Math.floor(Math.random() * 2000);
     const server = path.join(__dirname, '..', 'installer', 'server.mjs');
     const child = spawn('script', ['-qec', `"${process.execPath}" "${server}" --port ${port}`, '/dev/null'], {
@@ -212,7 +229,7 @@ test('wizard e2e: banner only while the console waits, a failed run explains its
         const failed = await until((p) => !p.running && p.error);
         assert.match(failed.error, /no coincidieron/);
         assert.equal(failed.consolePrompt, null, 'no banner once the console stopped waiting');
-        assert.equal(failed.steps.find((s) => s.id === 'format-luks').status, 'failed');
+        assert.ok(failed.steps.every((s) => s.status === 'pending'), 'the dialog gave up before any root step');
         assert.ok(!fs.existsSync(box.img));
 
         // Retry in place: accepted (not 409) and finishes 4/4.

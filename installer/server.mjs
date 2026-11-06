@@ -177,7 +177,7 @@ createServer(async (req, res) => {
   // T14b: ONE sudo session for the whole provisioning — repeated per-step
   // sudo prompts raced with the log piping and broke authentication. The
   // root script echoes [step] markers; the passphrase dialog runs on the
-  // console TTY (provisionAllScript), never through this server.
+  // console as the user (provisionAllScript), never through this server.
   if (url.pathname === "/api/volume/provision-all" && req.method === "POST") {
     let body = "";
     req.on("data", (c) => (body += c));
@@ -191,9 +191,11 @@ createServer(async (req, res) => {
       const lang = planLang(req.headers.cookie);
       log += "provision-all running\n";
       const script = provisionAllScript({ consent, lang });
-      const child = spawn("sudo", ["sh", "-c", script], { stdio: ["inherit", "pipe", "pipe"] });
-      child.stdout?.on("data", (d) => (log += d));
-      child.stderr?.on("data", (d) => (log += d));
+      // The dialog owns the console (stdin/stdout/stderr inherited, so it is
+      // the terminal's foreground job); markers and root output arrive on
+      // fd 3. It runs as the user — only its root half uses sudo -n.
+      const child = spawn("sh", ["-c", script], { stdio: ["inherit", "inherit", "inherit", "pipe"] });
+      child.stdio[3]?.on("data", (d) => (log += d));
       child.on("close", (code) => {
         log += code === 0 ? "provision-all done\n" : `provision-all failed (rc=${code})\n`;
       });
@@ -227,9 +229,13 @@ createServer(async (req, res) => {
       passphrase: { es: "Las frases no coincidieron o eran muy cortas. Tocá Reintentar.", en: "The passphrases did not match or were too short. Press Retry." },
       consent: { es: "Falta tu consentimiento para formatear.", en: "Formatting consent is missing." },
       exists: { es: "Ya existe una imagen del volumen: no se tocó. Recargá la página para ver sus opciones.", en: "A volume image already exists: it was left untouched. Reload the page to see its options." },
+      sudo: { es: "Tu sesión de sudo no está activa: cerrá el instalador y volvé a abrirlo.", en: "Your sudo session is not active: close the installer and open it again." },
       loop: { es: "No se pudo asociar el dispositivo loop. No se formateó nada; tocá Reintentar.", en: "Could not associate the loop device. Nothing was formatted; press Retry." },
     };
-    const error = failedRun ? (FAIL_TEXT[reason]?.[lang] || (lang === "es" ? "Falló un paso — el detalle está en la consola." : "A step failed — details are in the console.")) : null;
+    // Unknown failure: show the root tool's own last message (its stderr
+    // arrives on the same pipe) instead of pointing the user elsewhere.
+    const detail = run.split("\n").map((l) => l.trim()).filter((l) => l && !/^(\[|provision-all|LOOP=)/.test(l)).pop() || "";
+    const error = failedRun ? (FAIL_TEXT[reason]?.[lang] || (lang === "es" ? "Falló un paso" : "A step failed") + (detail ? ": " + detail.slice(0, 200) : ".")) : null;
     const steps = VSTEPS.map(([id, l]) => ({
       id, label: l[lang] || l.en,
       status: finishedIds.includes(id) ? "done" : startedIds.includes(id) ? (failedRun ? "failed" : "running") : "pending",
