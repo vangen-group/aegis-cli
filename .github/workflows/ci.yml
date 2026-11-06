@@ -20,7 +20,16 @@ jobs:
       # Installer wizard suites (node:test). The provisioning dialog tests run
       # on a real pseudo-terminal via util-linux `script` (preinstalled).
       - name: Run installer tests
-        run: node --test tests/*.test.js
+        # Failing assertions are also emitted as annotations, so they show on
+        # the PR (and through the API) without opening the raw log.
+        run: |
+          set -o pipefail
+          node --version
+          node --test tests/*.test.js 2>&1 | tee installer-tests.log || {
+            grep -E 'not ok|✖|AssertionError|actual:|expected:|Error' installer-tests.log | head -40 |
+              while IFS= read -r line; do echo "::error::$line"; done
+            exit 1
+          }
 
       - name: Build the release tarball (no signing, just structure)
         run: bash scripts/build-release-tarball.sh dist/aegis-cli.tar.gz
