@@ -18,12 +18,16 @@ const finish = (code) => {
     process.exit(code);
 };
 
+// Node restores the terminal on SIGINT/SIGTERM but not on SIGHUP.
+process.on('SIGHUP', () => finish(129));
+
 echo.write(prompt);
 input.setRawMode(true);
 input.setEncoding('utf8');
 input.on('data', (chunk) => {
-    // Arrow keys and other escape sequences are not part of a passphrase.
-    if (chunk.includes('\u001b')) return;
+    // Arrow keys and other escape sequences are not part of a passphrase:
+    // drop just the sequence, keep what was typed around it.
+    chunk = chunk.replace(/\u001b(\[[0-?]*[ -/]*[@-~]|O.|.)?/g, '');
     for (const ch of chunk) { // iterates code points: 'ñ' is one character
         if (ch === '\r' || ch === '\n') return finish(0);
         if (ch === '\u0003') return finish(130); // Ctrl+C
@@ -37,7 +41,7 @@ input.on('data', (chunk) => {
             value = [];
             continue;
         }
-        if (ch < ' ') continue; // other control characters
+        if (ch < ' ' || (ch >= '\u0080' && ch <= '\u009f')) continue; // C0/C1 controls
         value.push(ch);
         echo.write('*');
     }

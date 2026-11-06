@@ -193,7 +193,8 @@ test('masked input: ñ is one *, Backspace erases, Ctrl+C cancels cleanly', { sk
     let box = sandbox();
     try {
         // 'contraseñaa' + Backspace + '1234' → 'contraseña1234' (14 characters)
-        const typed = 'contraseñaa\u007f1234';
+        // An arrow key in the middle is ignored without losing the rest.
+        const typed = 'contraseñaa\u007f12\u001b[D34';
         const r = await runOnTty(box, { answers: [typed, 'contraseña1234'] });
         assert.equal(r.code, 0, r.screen);
         assert.equal(r.read('key---batch-mode'), 'contraseña1234', 'Backspace removed one whole character');

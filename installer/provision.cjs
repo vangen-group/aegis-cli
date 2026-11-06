@@ -165,7 +165,10 @@ function provisionAllScript({ consent = false, lang = 'es', attempts = 3 } = {})
         `NODE=${shq(process.execPath)}; SECRET=${shq(path.join(__dirname, 'secret-input.cjs'))}`,
         'say() { printf \'%s\\n\' "$1"; }',
         'mark() { printf \'%s\\n\' "$1" >&3; }',
-        "trap 'stty sane 2>/dev/null' EXIT; trap 'exit 130' INT TERM",
+        // Restore the user's exact terminal settings (stty sane would reset
+        // them, e.g. drop iutf8) if the masked-input helper dies mid-read.
+        'TTY_SAVED=$(stty -g 2>/dev/null) || TTY_SAVED=',
+        "trap '[ -n \"$TTY_SAVED\" ] && stty \"$TTY_SAVED\" 2>/dev/null' EXIT; trap 'exit 130' INT TERM",
         `secret() { REPLY=$("$NODE" "$SECRET" "$1"); rc=$?; if [ $rc -eq 130 ]; then say ${shq(t.cancelled)}; mark '[fail] cancelled'; exit 130; fi; [ $rc -eq 0 ] || REPLY=; }`,
         consent ? 'true' : "mark '[fail] consent'; exit 3",
         `[ ! -e "$IMG" ] || { mark '[fail] exists'; exit 5; }`,
