@@ -40,9 +40,9 @@ function volumeState({ runner } = {}) {
             return { state: 'sealed', img: IMG, mnt: MNT, isTest: paths().isTest };
         }
         // Image exists but no loop association: provisioned, sealed at rest.
-        return { state: 'sealed', img: IMG, mnt: MNT };
+        return { state: 'sealed', img: IMG, mnt: MNT, isTest: paths().isTest };
     } catch {
-        return { state: 'unknown', img: IMG, mnt: MNT };
+        return { state: 'unknown', img: IMG, mnt: MNT, isTest: paths().isTest };
     }
 }
 
