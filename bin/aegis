@@ -5808,13 +5808,33 @@ cmd_install() {
     fi
 
     mkdir -p "$(dirname "${dst_native}")"
+    local _preserved_data_root=""
     if [[ -d "${dst_native}" ]]; then
         local backup="${dst_native%/}.bak-$(date -u +%Y%m%dT%H%M%SZ)"
         log "previous install backed up to: ${backup}"
+        # T14: the copy below replaces the whole configuration tree, .env
+        # included, so the launcher state the user accumulated would vanish —
+        # and the encrypted mode with it (AEGIS_ENCRYPTED / AEGIS_DATA_ROOT).
+        # Carry that block across the replacement.
+        if [[ -f "${dst_native}/.devcontainer/.env" ]] \
+            && grep -qx '# aegis:data-root' "${dst_native}/.devcontainer/.env" 2>/dev/null; then
+            _preserved_data_root="$(sed -n '/^# aegis:data-root$/,$p' "${dst_native}/.devcontainer/.env" \
+                | grep -E '^(# aegis:data-root|AEGIS_[A-Z_]+=)' || true)"
+        fi
         mv "${dst_native}" "${backup}"
         _prune_backups "${dst_native}"
     fi
     cp -R "${src_native}" "${dst_native}"
+
+    # T14 (cont.): put the encrypted-mode block back, once, and say so.
+    if [[ -n "${_preserved_data_root:-}" ]]; then
+        local _new_env="${dst_native}/.devcontainer/.env"
+        mkdir -p "$(dirname "${_new_env}")"
+        if ! grep -qx '# aegis:data-root' "${_new_env}" 2>/dev/null; then
+            printf '%s\n' "${_preserved_data_root}" >> "${_new_env}"
+            log "kept the encrypted-mode state across the install (${_new_env##*/})."
+        fi
+    fi
 
     # Everything the launcher resolves from this folder (see the configuration
     # block at the top of this file), so a half-copied tree is caught here.
@@ -6056,13 +6076,18 @@ cmd_backup() {
 
     # T5c: in the encrypted layout the archive also carries the agent-state
     # volumes, so a migration is one backup -> switch -> restore.
-    local -a mnts=(-v "$(code_volume_src):/data:ro" -v "$(engram_volume_src):/data/engram:ro")
+    # T13: FLAT mounts. Mounting engram (or any agent volume) UNDER the
+    # read-only /data worked with named volumes, but with host binds runc
+    # cannot create a mountpoint inside a read-only mount and the run fails
+    # ("mount ... : read-only file system"). Every source now lands at its own
+    # /m/<id>, and /m is a plain directory in the image, so nothing nests.
+    local -a mnts=(-v "$(code_volume_src):/m/wsroot:ro" -v "$(engram_volume_src):/m/engram:ro")
     local -a ids=(code engram)
     if agent_state_mode; then
         local _id _src
         while IFS=$'\t' read -r _id _src; do
             [[ -n "$_id" ]] || continue
-            mnts+=(-v "${_src}:/data/${_id}:ro")
+            mnts+=(-v "${_src}:/m/${_id}:ro")
             ids+=("$_id")
         done < <(agent_state_rows)
         log "backing up the code, engram and agent-state volumes -> ${dest%/}/${archive_name}"
@@ -6078,19 +6103,25 @@ cmd_backup() {
     # File counts computed from the SAME read-only mounts, before archiving,
     # so the manifest's counts and the archive's contents can never diverge.
     local counts
+    local -a rest=()
+    local _r
+    for _r in "${ids[@]}"; do [[ "$_r" == "code" ]] || rest+=("$_r"); done
     counts="$(MSYS_NO_PATHCONV=1 docker run --rm --network none \
         "${mnts[@]}" \
         "$BACKUP_IMAGE" sh -c '
+            n=$(find /m/wsroot/code -type f 2>/dev/null | wc -l)
+            echo "${n:-0}"
             for d in "$@"; do
-                find "/data/$d" -type f 2>/dev/null | wc -l
+                find "/m/$d" -type f 2>/dev/null | wc -l
             done
-        ' sh "${ids[@]}")"
+        ' sh "${rest[@]}")"
 
     MSYS_NO_PATHCONV=1 docker run --rm --network none \
         "${mnts[@]}" \
         -v "${dest}:/backup" \
-        "$BACKUP_IMAGE" tar czf "/backup/${archive_name}" -C /data \
-        "${excludes[@]}" "${ids[@]}"
+        "$BACKUP_IMAGE" tar czf "/backup/${archive_name}" \
+        -C /m/wsroot "${excludes[@]}" code \
+        -C /m "${excludes[@]}" "${rest[@]}"
 
     local archive_path="${dest%/}/${archive_name}"
     local sha256 size_bytes
