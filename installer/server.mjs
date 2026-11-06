@@ -8,7 +8,7 @@ import { HTML, JS, CSS } from "./assets.mjs";
 import { collectPrereqs } from "./prereqs.cjs";
 import { volumeState, verifyStep, PROVISIONING, paths } from "./volume.cjs";
 import { runStep, cleanupTestVolume, isTest, provisionAllScript } from "./provision.cjs";
-import { writeVolumeHelpers } from "./helpers.cjs";
+import { writeVolumeHelpers, writeModeState } from "./helpers.cjs";
 import { writeFileSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -212,6 +212,11 @@ createServer(async (req, res) => {
         const { img, mnt, mapper } = paths();
         const uid = typeof process.getuid === "function" ? process.getuid() : 1000;
         const gid = typeof process.getgid === "function" ? process.getgid() : 1000;
+        // T11: the vault now exists, so record the choice — otherwise the
+        // client finishes with a vault nothing uses.
+        const mode = writeModeState({ home: process.env.HOME, root: `${mnt}/aegis`, uid, gid });
+        if (mode.ok) vlog += `[volume] encrypted mode recorded: ${mode.path}\n`;
+        else vlog += `[volume] could not record the encrypted mode: ${mode.error}\n`;
         const res = writeVolumeHelpers({ home: process.env.HOME, img, mnt, mapper, uid, gid });
         if (res.ok) {
           vlog += `[volume] helpers installed: ${res.files.join(", ")}\n`;
