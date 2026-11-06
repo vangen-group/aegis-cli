@@ -1,0 +1,50 @@
+'use strict';
+// Masked passphrase input for the provisioning dialog (provision.cjs).
+// Shows one '*' per typed character on the console (stderr) and writes the
+// passphrase to stdout, which the dialog shell captures — it never reaches
+// the wizard server. Runs as the user, as the terminal's foreground job.
+//   node secret-input.cjs '<prompt>'
+// Exit: 0 = line read, 130 = Ctrl+C, 1 = Ctrl+D on an empty line, 2 = no TTY.
+const prompt = process.argv[2] || '';
+const input = process.stdin;
+const echo = process.stderr;
+if (!input.isTTY) process.exit(2);
+
+let value = [];
+const finish = (code) => {
+    input.setRawMode(false);
+    echo.write('\n');
+    if (code === 0) process.stdout.write(value.join(''));
+    process.exit(code);
+};
+
+// Node restores the terminal on SIGINT/SIGTERM but not on SIGHUP.
+process.on('SIGHUP', () => finish(129));
+
+// Raw mode BEFORE the prompt: anything typed as soon as it appears must
+// never be echoed in clear.
+input.setRawMode(true);
+input.setEncoding('utf8');
+echo.write(prompt);
+input.on('data', (chunk) => {
+    // Arrow keys and other escape sequences are not part of a passphrase:
+    // drop just the sequence, keep what was typed around it.
+    chunk = chunk.replace(/\u001b(\[[0-?]*[ -/]*[@-~]|O.|.)?/g, '');
+    for (const ch of chunk) { // iterates code points: 'ñ' is one character
+        if (ch === '\r' || ch === '\n') return finish(0);
+        if (ch === '\u0003') return finish(130); // Ctrl+C
+        if (ch === '\u0004') { if (value.length === 0) return finish(1); continue; } // Ctrl+D
+        if (ch === '\u007f' || ch === '\b') { // Backspace
+            if (value.length) { value.pop(); echo.write('\b \b'); }
+            continue;
+        }
+        if (ch === '\u0015') { // Ctrl+U clears the line
+            echo.write('\b \b'.repeat(value.length));
+            value = [];
+            continue;
+        }
+        if (ch < ' ' || (ch >= '\u0080' && ch <= '\u009f')) continue; // C0/C1 controls
+        value.push(ch);
+        echo.write('*');
+    }
+});

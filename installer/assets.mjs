@@ -50,7 +50,7 @@ export const HTML = `<!doctype html><html lang="en"><head><meta charset="utf-8">
       <p class="lead" data-i18n="volume-lead">Tus secretos y entornos viven cifrados en un volumen LUKS. Si todavía no existe, el wizard lo crea con vos — la frase de paso se escribe SOLO en la consola y nunca atraviesa el wizard.</p>
       <p class="prereq"><span class="dot dot-unknown" id="volume-dot"></span><span id="volume-state">Consultando el volumen…</span></p>
       <div id="volume-guide" hidden>
-        <p class="hint" data-i18n="vol-guide-hint">El wizard crea el volumen con vos: apretá Crear y seguí la consola — la frase de paso y el YES se escriben SOLO ahí.</p>
+        <p class="hint" data-i18n="vol-guide-hint">El wizard crea el volumen con vos: apretá Crear y elegí tu frase de paso en la consola — se escribe SOLO ahí.</p>
         <div class="progress">
           <div class="progress-head"><span class="progress-title" data-i18n="progress">Progreso</span><span class="progress-count" id="volume-progress-count"></span></div>
           <div role="progressbar" aria-label="Volume progress"><div class="bar" id="volume-bar"></div></div>
@@ -61,12 +61,12 @@ export const HTML = `<!doctype html><html lang="en"><head><meta charset="utf-8">
       <div class="panel-actions">
         <button id="volume-go" class="btn btn-primary" data-i18n="vol-create">Crear el volumen</button>
         <button id="to-install" class="btn btn-primary" hidden data-i18n="to-install">Continuar a la instalación</button>
-        <button id="volume-retry" class="btn btn-ghost" hidden data-i18n="retry">Reintentar</button>
+        <button id="volume-retry" class="btn btn-ghost" hidden data-i18n="vol-retry">Reintentar</button>
       </div>
     </section>
 
     <section class="panel" id="card-plan" aria-labelledby="plan-title" hidden>
-      <p class="eyebrow" data-i18n="eyebrow2">Paso 2 de 4 · Revisar</p>
+      <p class="eyebrow" data-i18n="eyebrow2">Paso 2 de 5 · Revisar</p>
       <h1 id="plan-title" tabindex="-1" data-i18n="plan-title">Confirmá el plan</h1>
       <p class="lead" data-i18n="plan-lead">Este instalador va a correr exactamente estos pasos. Leelos — nada se instala hasta que aprietes Instalar.</p>
       <pre id="plan" class="terminal">loading…</pre>
@@ -86,7 +86,7 @@ export const HTML = `<!doctype html><html lang="en"><head><meta charset="utf-8">
     </section>
 
     <section class="panel" id="card-run" aria-labelledby="run-title" hidden>
-      <p class="eyebrow" data-i18n="eyebrow3">Paso 3 de 4 · Instalar</p>
+      <p class="eyebrow" data-i18n="eyebrow4">Paso 4 de 5 · Instalar</p>
       <h1 id="run-title" tabindex="-1" data-i18n="run-title">Instalando Aegis CLI</h1>
       <p class="lead" data-i18n="run-lead">La salida del instalador se muestra en la consola. Cerrar esta pestaña no lo detiene.</p>
       <div class="progress">
@@ -105,12 +105,12 @@ export const HTML = `<!doctype html><html lang="en"><head><meta charset="utf-8">
     </section>
 
     <section class="panel" id="card-done" aria-labelledby="done-title" hidden>
-      <p class="eyebrow" data-i18n="eyebrow4">Paso 4 de 4 · Listo</p>
+      <p class="eyebrow" data-i18n="eyebrow5">Paso 5 de 5 · Listo</p>
       <h1 id="done-title" tabindex="-1" data-i18n="done-title">Aegis CLI está instalado</h1>
       <p class="lead" id="done-lead" data-i18n="done-lead">Tu siguiente paso es el primer viaje: activá tu licencia y levantá la workstation.</p>
       <p id="next-done" class="next-command"></p>
       <div class="panel-actions">
-        <button id="finish" class="btn btn-primary">Finish</button>
+        <button id="finish" class="btn btn-primary" data-i18n="finish">Listo</button>
       </div>
     </section>
   </div>
@@ -198,12 +198,12 @@ function startRun(){
   },400);
 }
 const I18N = {
-  es: {'local':'Instalador local','reqs-title':'Verificando esta computadora','checking':'Verificando tu máquina…','waiting':'Esperando los checks…','review':'Revisar el plan','to-volume':'Continuar','vol-create':'Crear el volumen','to-install':'Continuar a la instalación','plan-title':'Confirmá el plan','back':'Volver','install':'Instalar Aegis CLI','run-title':'Instalando Aegis CLI','progress':'Progreso','finish':'Listo','retry':'Volver al plan','done-title':'Aegis CLI está instalado',
-    'st1':'Check','st2':'Revisar','st3':'Volumen','st4':'Install','st5':'Listo','eyebrow1':'Paso 1 de 5 · Check','eyebrow2':'Paso 2 de 5 · Revisar','eyebrow3':'Paso 3 de 5 · Volumen','eyebrow4':'Paso 4 de 5 · Instalar','eyebrow5':'Paso 5 de 5 · Listo','volume-h1':'Tu volumen seguro LUKS','volume-lead':'Tus secretos y entornos viven cifrados en un volumen LUKS. Si todavía no existe, el wizard lo crea con vos — la frase de paso se escribe SOLO en la consola y nunca atraviesa el wizard.',
+  es: {'local':'Instalador local','reqs-title':'Verificando esta computadora','checking':'Verificando tu máquina…','waiting':'Esperando los checks…','review':'Revisar el plan','to-volume':'Continuar','vol-create':'Crear el volumen','to-install':'Continuar a la instalación','plan-title':'Confirmá el plan','back':'Volver','install':'Instalar Aegis CLI','run-title':'Instalando Aegis CLI','progress':'Progreso','finish':'Listo','retry':'Volver al plan','vol-retry':'Reintentar','vol-guide-hint':'El wizard crea el volumen con vos: apretá Crear y elegí tu frase de paso en la consola — se escribe SOLO ahí.','done-title':'Aegis CLI está instalado',
+    'st1':'Check','st2':'Revisar','st3':'Volumen','st4':'Instalar','st5':'Listo','eyebrow1':'Paso 1 de 5 · Check','eyebrow2':'Paso 2 de 5 · Revisar','eyebrow3':'Paso 3 de 5 · Volumen','eyebrow4':'Paso 4 de 5 · Instalar','eyebrow5':'Paso 5 de 5 · Listo','volume-h1':'Tu volumen seguro LUKS','volume-lead':'Tus secretos y entornos viven cifrados en un volumen LUKS. Si todavía no existe, el wizard lo crea con vos — la frase de paso se escribe SOLO en la consola y nunca atraviesa el wizard.',
     'running':'en progreso','done':'hecho','pending':'pendiente','failed':'falló',
     'step-of':(a,b)=>'Paso '+a+' de '+b},
-  en: {'local':'Local installer','reqs-title':'Checking this computer','checking':'Checking your machine…','waiting':'Waiting for checks…','review':'Review the plan','to-volume':'Continue','vol-create':'Create the volume','to-install':'Continue to install','plan-title':'Confirm the plan','back':'Back','install':'Install Aegis CLI','run-title':'Installing Aegis CLI','progress':'Progress','finish':'Finish','retry':'Back to the plan','done-title':'Aegis CLI is installed',
-    'eyebrow1':'Step 1 of 4 · Check','eyebrow2':'Step 2 of 4 · Review','eyebrow3':'Step 3 of 4 · Install','eyebrow4':'Step 4 of 4 · Done',
+  en: {'local':'Local installer','reqs-title':'Checking this computer','checking':'Checking your machine…','waiting':'Waiting for checks…','review':'Review the plan','to-volume':'Continue','vol-create':'Create the volume','to-install':'Continue to install','plan-title':'Confirm the plan','back':'Back','install':'Install Aegis CLI','run-title':'Installing Aegis CLI','progress':'Progress','finish':'Finish','retry':'Back to the plan','vol-retry':'Retry','vol-guide-hint':'The wizard creates the volume with you: press Create and choose your passphrase on the console — it is typed ONLY there.','done-title':'Aegis CLI is installed',
+    'eyebrow1':'Step 1 of 5 · Check','eyebrow2':'Step 2 of 5 · Review','eyebrow3':'Step 3 of 5 · Volume','eyebrow4':'Step 4 of 5 · Install','eyebrow5':'Step 5 of 5 · Done',
     'running':'in progress','done':'done','pending':'pending','failed':'failed',
     'step-of':(a,b)=>'Step '+a+' of '+b},
 };
@@ -342,7 +342,7 @@ el('to-install').onclick=()=>{el('to-install').disabled=true;startRun();};
 el('back').onclick=()=>go(1);
 el('confirm').onclick=()=>{el('confirm').disabled=true;go(3);};
 el('retry').onclick=()=>location.reload();
-el('done').onclick=()=>go(4);
+el('done').onclick=()=>go(5);
 el('finish').onclick=()=>window.close();
 el('lang').onclick=()=>{
   const cur=window.__aegisLang||'es';

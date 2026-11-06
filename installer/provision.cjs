@@ -4,6 +4,7 @@
 // in the inherited TTY — the wizard server NEVER sees them. The destructive
 // step (luksFormat) refuses to run without an explicit consent flag.
 'use strict';
+const path = require('node:path');
 // Test-volume mode (T13): distinct names so tests/provisioning never touch
 // real volumes. Cleanup (delete-test) refuses any path without "test".
 const isTest = () => process.env.AEGIS_INSTALLER_TEST_VOLUME === '1';
@@ -77,7 +78,7 @@ const MAX_PASSPHRASE = 512;
 const CONSOLE_TEXT = {
     es: {
         title: 'Aegis · Volumen seguro',
-        intro: `Elegí una frase de paso (mínimo ${MIN_PASSPHRASE} caracteres). No se muestra mientras escribís — es normal.`,
+        intro: `Elegí una frase de paso (mínimo ${MIN_PASSPHRASE} caracteres). Cada carácter se muestra como *.`,
         warn: 'Guardala bien: sin ella, los datos del volumen NO se pueden recuperar.',
         ask: '  Frase de paso:   ',
         again: '  Repetila:        ',
@@ -86,13 +87,14 @@ const CONSOLE_TEXT = {
         mismatch: '  ✗ No coinciden. Probá de nuevo.',
         ok: '  ✓ Frase confirmada. Creando el volumen cifrado…',
         giveup: '  ✗ Demasiados intentos. Volvé al wizard y tocá "Reintentar".',
+        cancelled: '  ✗ Cancelado. Volvé al wizard y tocá "Reintentar" cuando quieras.',
         sudo: '  ✗ Tu sesión de sudo no está activa. Cerrá el instalador y volvé a abrirlo.',
         failed: '  ✗ No se pudo crear el volumen. El motivo está en el wizard (navegador).',
         mounted: '  ✓ Volumen cifrado y montado. Ya podés volver al navegador.',
     },
     en: {
         title: 'Aegis · Secure volume',
-        intro: `Choose a passphrase (at least ${MIN_PASSPHRASE} characters). Nothing shows as you type — that is expected.`,
+        intro: `Choose a passphrase (at least ${MIN_PASSPHRASE} characters). Each character shows as *.`,
         warn: 'Keep it safe: without it, the volume data CANNOT be recovered.',
         ask: '  Passphrase:      ',
         again: '  Repeat it:       ',
@@ -101,6 +103,7 @@ const CONSOLE_TEXT = {
         mismatch: '  ✗ They do not match. Try again.',
         ok: '  ✓ Passphrase confirmed. Creating the encrypted volume…',
         giveup: '  ✗ Too many attempts. Go back to the wizard and press "Retry".',
+        cancelled: '  ✗ Cancelled. Go back to the wizard and press "Retry" when ready.',
         sudo: '  ✗ Your sudo session is not active. Close the installer and open it again.',
         failed: '  ✗ The volume could not be created. The reason is shown in the wizard (browser).',
         mounted: '  ✓ Volume encrypted and mounted. You can go back to the browser.',
@@ -157,16 +160,24 @@ function provisionAllScript({ consent = false, lang = 'es', attempts = 3 } = {})
         'set -u',
         `IMG=${shq(img)}`,
         `ROOT=${shq(rootScript())}`,
+        // Masked input (one * per character) comes from a node helper run with
+        // the same node as the wizard; it prints the passphrase on its stdout.
+        `NODE=${shq(process.execPath)}; SECRET=${shq(path.join(__dirname, 'secret-input.cjs'))}`,
         'say() { printf \'%s\\n\' "$1"; }',
         'mark() { printf \'%s\\n\' "$1" >&3; }',
-        "trap 'stty echo 2>/dev/null' EXIT; trap 'exit 130' INT TERM",
-        // read -s is not POSIX (dash): toggle echo instead.
-        'secret() { stty -echo; printf \'%s\' "$1"; IFS= read -r REPLY || REPLY=; stty echo; printf \'\\n\'; }',
+        // Restore the user's exact terminal settings (stty sane would reset
+        // them, e.g. drop iutf8) if the masked-input helper dies mid-read.
+        'TTY_SAVED=$(stty -g 2>/dev/null) || TTY_SAVED=',
+        "trap '[ -n \"$TTY_SAVED\" ] && stty \"$TTY_SAVED\" 2>/dev/null' EXIT; trap 'exit 130' INT TERM",
+        `secret() { REPLY=$("$NODE" "$SECRET" "$1"); rc=$?; if [ $rc -eq 130 ]; then say ${shq(t.cancelled)}; mark '[fail] cancelled'; exit 130; fi; [ $rc -eq 0 ] || REPLY=; }`,
         consent ? 'true' : "mark '[fail] consent'; exit 3",
         `[ ! -e "$IMG" ] || { mark '[fail] exists'; exit 5; }`,
         `sudo -n true 2>/dev/null || { say ${shq(t.sudo)}; mark '[fail] sudo'; exit 7; }`,
         "mark '[await] passphrase'",
         `say ''; say ${shq('━━━ ' + t.title + ' ━━━')}; say ${shq(t.intro)}; say ${shq(t.warn)}; say ''`,
+        // Echo stays OFF for the whole exchange: keys typed between two
+        // prompts (while the helper restarts) must not show in clear.
+        'stty -echo 2>/dev/null',
         'PASS=; n=0',
         `while [ $n -lt ${attempts} ]; do`,
         '  n=$((n+1))',
@@ -178,6 +189,7 @@ function provisionAllScript({ consent = false, lang = 'es', attempts = 3 } = {})
         `  say ${shq(t.mismatch)}`,
         'done',
         'P1=; P2=',
+        '[ -n "$TTY_SAVED" ] && stty "$TTY_SAVED" 2>/dev/null',
         `[ -n "$PASS" ] || { say ${shq(t.giveup)}; mark '[fail] passphrase'; exit 4; }`,
         "mark '[await] done'",
         `say ${shq(t.ok)}`,
