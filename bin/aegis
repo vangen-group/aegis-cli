@@ -424,6 +424,18 @@ derive_data_root() {
         return 0
     fi
     [[ -n "$root" ]] || root="$(state_get AEGIS_DATA_ROOT)"
+    # T11: the installer wizard records the choice before the workstation (and
+    # its .env) exists. That file is what makes "install the CLI, then the WS"
+    # land on encrypted persistence instead of the named volumes.
+    if [[ -z "$root" ]]; then
+        local _mode="${XDG_STATE_HOME:-$HOME/.local/state}/aegis/mode"
+        if [[ -f "$_mode" ]] && grep -qx 'AEGIS_ENCRYPTED=1' "$_mode" 2>/dev/null; then
+            root="$(sed -n 's/^AEGIS_DATA_ROOT=//p' "$_mode" | head -n1)"
+            # No log here: derive_data_root runs for EVERY command and a stray
+            # line would pollute version/status output. `up` reports it.
+            [[ -n "$root" ]] && _AEGIS_ADOPTED_MODE=1
+        fi
+    fi
     [[ -n "$root" ]] || return 0
     case "$root" in
         /*) ;;
@@ -1348,6 +1360,12 @@ cmd_up() {
 
     # T3: never start on top of a sealed vault (see the helper above).
     require_vault_if_code_dir_is_a_bind || exit 1
+
+    # T11: say it out loud the one time it matters — when the mode came from
+    # the installer rather than from this shell.
+    if [[ "${_AEGIS_ADOPTED_MODE:-0}" = "1" ]]; then
+        log "encrypted mode: adopting the installer's setting (AEGIS_DATA_ROOT=${AEGIS_DATA_ROOT})."
+    fi
 
     # T8: fit the stack's defaults to the daemon instead of assuming a big one.
     resolve_resource_limits
@@ -6203,6 +6221,18 @@ cmd_volume_migrate_to_vault() {
         esac
     done
     [[ -n "$root" ]] || root="$(state_get AEGIS_DATA_ROOT)"
+    # T11: the installer wizard records the choice before the workstation (and
+    # its .env) exists. That file is what makes "install the CLI, then the WS"
+    # land on encrypted persistence instead of the named volumes.
+    if [[ -z "$root" ]]; then
+        local _mode="${XDG_STATE_HOME:-$HOME/.local/state}/aegis/mode"
+        if [[ -f "$_mode" ]] && grep -qx 'AEGIS_ENCRYPTED=1' "$_mode" 2>/dev/null; then
+            root="$(sed -n 's/^AEGIS_DATA_ROOT=//p' "$_mode" | head -n1)"
+            # No log here: derive_data_root runs for EVERY command and a stray
+            # line would pollute version/status output. `up` reports it.
+            [[ -n "$root" ]] && _AEGIS_ADOPTED_MODE=1
+        fi
+    fi
     [[ -n "$root" ]] || { err "no target root: pass --root <dir> (inside the mounted vault) or set AEGIS_DATA_ROOT."; exit 2; }
     case "$root" in /*) ;; *) err "--root must be an absolute path (got: $root)"; exit 2 ;; esac
     root="${root%/}"
