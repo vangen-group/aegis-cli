@@ -46,6 +46,9 @@ MEMBERS=(
     "aegis-secret-protect.js:bin/aegis-secret-protect.js"
     "aegis-telemetry.js:bin/aegis-telemetry.js"
     "aegis-license-keys.json:config/license-keys.json"
+    # The CLI's own version, next to the launcher: `aegis version` reports both
+    # halves (CLI first, workstation second) and the CLI one comes from here.
+    "VERSION:VERSION"
 )
 
 for pair in "${MEMBERS[@]}"; do
