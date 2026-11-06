@@ -175,6 +175,9 @@ function provisionAllScript({ consent = false, lang = 'es', attempts = 3 } = {})
         `sudo -n true 2>/dev/null || { say ${shq(t.sudo)}; mark '[fail] sudo'; exit 7; }`,
         "mark '[await] passphrase'",
         `say ''; say ${shq('━━━ ' + t.title + ' ━━━')}; say ${shq(t.intro)}; say ${shq(t.warn)}; say ''`,
+        // Echo stays OFF for the whole exchange: keys typed between two
+        // prompts (while the helper restarts) must not show in clear.
+        'stty -echo 2>/dev/null',
         'PASS=; n=0',
         `while [ $n -lt ${attempts} ]; do`,
         '  n=$((n+1))',
@@ -186,6 +189,7 @@ function provisionAllScript({ consent = false, lang = 'es', attempts = 3 } = {})
         `  say ${shq(t.mismatch)}`,
         'done',
         'P1=; P2=',
+        '[ -n "$TTY_SAVED" ] && stty "$TTY_SAVED" 2>/dev/null',
         `[ -n "$PASS" ] || { say ${shq(t.giveup)}; mark '[fail] passphrase'; exit 4; }`,
         "mark '[await] done'",
         `say ${shq(t.ok)}`,

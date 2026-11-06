@@ -21,9 +21,11 @@ const finish = (code) => {
 // Node restores the terminal on SIGINT/SIGTERM but not on SIGHUP.
 process.on('SIGHUP', () => finish(129));
 
-echo.write(prompt);
+// Raw mode BEFORE the prompt: anything typed as soon as it appears must
+// never be echoed in clear.
 input.setRawMode(true);
 input.setEncoding('utf8');
+echo.write(prompt);
 input.on('data', (chunk) => {
     // Arrow keys and other escape sequences are not part of a passphrase:
     // drop just the sequence, keep what was typed around it.
