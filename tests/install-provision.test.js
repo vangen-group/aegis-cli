@@ -117,6 +117,7 @@ test('console dialog: visible prompts, hidden passphrase, retry on short/mismatc
         assert.match(r.screen, /Frase confirmada/);
         assert.match(r.screen, /cifrado y montado/);
         assert.ok(!r.screen.includes(GOOD), 'the passphrase is never echoed on the console');
+        assert.ok(r.screen.includes('*'.repeat(GOOD.length)), 'each typed character shows as *');
         assert.ok(!/YES|yes/.test(r.screen), 'no YES question');
         assert.match(r.calls, /cryptsetup luksFormat --batch-mode --key-file=- \/dev\/loop9/);
         assert.match(r.calls, /cryptsetup luksOpen --key-file=- \/dev\/loop9 aegis_vol_test/);
@@ -188,6 +189,27 @@ test('an expired sudo session fails fast, before asking for the passphrase', { s
     } finally { clean(box); }
 });
 
+test('masked input: ñ is one *, Backspace erases, Ctrl+C cancels cleanly', { skip: !HAS_SCRIPT && 'needs util-linux script' }, async () => {
+    let box = sandbox();
+    try {
+        // 'contraseñaa' + Backspace + '1234' → 'contraseña1234' (14 characters)
+        const typed = 'contraseñaa\u007f1234';
+        const r = await runOnTty(box, { answers: [typed, 'contraseña1234'] });
+        assert.equal(r.code, 0, r.screen);
+        assert.equal(r.read('key---batch-mode'), 'contraseña1234', 'Backspace removed one whole character');
+        assert.ok(r.screen.includes('*'.repeat(11)), 'ñ shows as a single *');
+        assert.ok(!r.screen.includes('contraseña'), 'never echoed');
+    } finally { clean(box); }
+    box = sandbox();
+    try {
+        const r = await runOnTty(box, { answers: ['\u0003'] });
+        assert.equal(r.code, 130);
+        assert.match(r.markers, /\[fail\] cancelled/);
+        assert.match(r.screen, /Cancelado/);
+        assert.equal(r.calls, '', 'nothing ran as root');
+    } finally { clean(box); }
+});
+
 test('per-step luksFormat keeps passphrase verification (-y) alongside --batch-mode', () => {
     const argv = commandsFor()['format-luks'].argv;
     assert.ok(argv.includes('--batch-mode') && argv.includes('-y'));
@@ -196,9 +218,14 @@ test('per-step luksFormat keeps passphrase verification (-y) alongside --batch-m
 test('wizard e2e: banner only while the console waits, a failed run explains itself and Retry works', { skip: !HAS_SCRIPT && 'needs util-linux script', timeout: 60000 }, async () => {
     const box = sandbox();
     const port = 19464 + Math.floor(Math.random() * 2000);
-    const server = path.join(__dirname, '..', 'installer', 'server.mjs');
+    // Run a copy of the wizard: confirming the install writes
+    // telemetry-choice.json next to the server, never into the repo.
+    fs.cpSync(path.join(__dirname, '..', 'installer'), path.join(box.dir, 'installer'), { recursive: true });
+    const server = path.join(box.dir, 'installer', 'server.mjs');
+    const installStub = path.join(box.dir, 'install.sh');
+    fs.writeFileSync(installStub, 'echo INSTALLED-OK\n');
     const child = spawn('script', ['-qec', `"${process.execPath}" "${server}" --port ${port}`, '/dev/null'], {
-        env: { ...process.env, PATH: `${box.bin}:${process.env.PATH}`, AEGIS_INSTALLER_TEST_VOLUME: '1', AEGIS_VOLUME_IMG: box.img, AEGIS_VOLUME_MNT: box.mnt },
+        env: { ...process.env, PATH: `${box.bin}:${process.env.PATH}`, AEGIS_INSTALLER_TEST_VOLUME: '1', AEGIS_VOLUME_IMG: box.img, AEGIS_VOLUME_MNT: box.mnt, AEGIS_INSTALLER_INSTALL_SH: installStub },
     });
     let screen = '', seen = 0, answers = [];
     const pump = () => {
@@ -239,6 +266,7 @@ test('wizard e2e: banner only while the console waits, a failed run explains its
         assert.equal(done.error, null);
         assert.equal(done.consolePrompt, null);
         assert.equal(await start(), 409, 'a finished run is not restarted');
+
     } finally {
         child.kill('SIGKILL');
         clean(box);

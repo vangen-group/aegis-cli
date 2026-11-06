@@ -229,6 +229,7 @@ createServer(async (req, res) => {
       passphrase: { es: "Las frases no coincidieron o eran muy cortas. Tocá Reintentar.", en: "The passphrases did not match or were too short. Press Retry." },
       consent: { es: "Falta tu consentimiento para formatear.", en: "Formatting consent is missing." },
       exists: { es: "Ya existe una imagen del volumen: no se tocó. Recargá la página para ver sus opciones.", en: "A volume image already exists: it was left untouched. Reload the page to see its options." },
+      cancelled: { es: "Cancelaste la frase de paso. Tocá Reintentar cuando quieras.", en: "You cancelled the passphrase. Press Retry when ready." },
       sudo: { es: "Tu sesión de sudo no está activa: cerrá el instalador y volvé a abrirlo.", en: "Your sudo session is not active: close the installer and open it again." },
       loop: { es: "No se pudo asociar el dispositivo loop. No se formateó nada; tocá Reintentar.", en: "Could not associate the loop device. Nothing was formatted; press Retry." },
     };
