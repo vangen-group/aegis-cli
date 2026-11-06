@@ -17,7 +17,7 @@ NODE_BIN="${AEGIS_INSTALLER_NODE:-}"
 # The sudo timestamp then covers the whole provisioning run.
 if command -v sudo >/dev/null 2>&1; then
     echo "One sudo password check (it covers the whole install):"
-    sudo -v || echo "warning: continuing without sudo — volume provisioning will ask again"
+    sudo -v || echo "warning: sudo was not authenticated — volume provisioning will stop and ask you to reopen the installer"
     # Keep the timestamp fresh while the wizard runs (sudo expires in ~15min).
     ( while sleep 240; do sudo -n -v 2>/dev/null || break; done ) &
 fi
