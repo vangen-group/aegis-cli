@@ -289,6 +289,12 @@ test('wizard e2e: banner only while the console waits, a failed run explains its
         assert.match(installLog, /INSTALLED-OK/);
         assert.match(installLog, /INSTALL-FINISHED rc=0/);
         assert.equal((await fetch(base + '/api/confirm', { method: 'POST', headers: H, body: '{}' })).status, 409, 'the install starts once');
+
+        // Delete the test volume: the answer arrives only once it is gone,
+        // so the page can reload straight into "missing".
+        const del = await fetch(base + '/api/volume/cleanup', { method: 'POST', headers: H });
+        assert.equal(del.status, 200);
+        assert.ok(!fs.existsSync(box.img), 'removed before the response');
     } finally {
         child.kill('SIGKILL');
         clean(box);

@@ -48,3 +48,21 @@ test('S8 supersedes the dev-only gate: EVERYONE gets the provisioning list (the 
     assert.ok(!src.includes('AEGIS_INSTALLER_DEV === "1"'), 'the dev-only gate must be gone');
     assert.match(src, /provisioning: PROVISIONING\(\).map/, 'the provisioning list ships to every wizard run');
 });
+
+test('every volume state reports whether it is a test volume', () => {
+    process.env.AEGIS_INSTALLER_TEST_VOLUME = '1';
+    try {
+        // image present, not mounted, no loop association → sealed at rest
+        const runner = (cmd, args) => ({ status: cmd === 'test' ? 0 : cmd === 'mountpoint' ? 1 : 0, stdout: '' });
+        const v = volumeState({ runner });
+        assert.equal(v.state, 'sealed');
+        assert.equal(v.isTest, true);
+    } finally { delete process.env.AEGIS_INSTALLER_TEST_VOLUME; }
+});
+
+test('the delete-test-volume button is offered only in test mode, in every end state', () => {
+    const JS = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'installer', 'assets.mjs'), 'utf8');
+    const calls = (JS.match(/offerCleanup\(/g) || []).length;
+    assert.ok(calls >= 4, `defined + offered when mounted, sealed, after success and after failure (got ${calls})`);
+    assert.match(JS, /const offerCleanup=\(\)=>\{if\(!v\.isTest\)return;/, 'never outside test mode');
+});

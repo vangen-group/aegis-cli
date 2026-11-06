@@ -289,9 +289,15 @@ createServer(async (req, res) => {
   // T13: remove the TEST volume (umount + luksClose + losetup -d + rm) —
   // guarded inside cleanupTestVolume to refuse any non-test path.
   if (url.pathname === "/api/volume/cleanup" && req.method === "POST") {
+    // Answer only once the volume is really gone, so the page can reload
+    // straight into "missing" (it used to reload mid-cleanup).
     const r = cleanupTestVolume({ spawnFn: (argv, opts) => spawn(argv[0], argv.slice(1), opts) });
     if (!r.ok) return send(400, r.error || "refused");
-    return send(202, JSON.stringify({ cleanup: true }), "application/json");
+    let answered = false;
+    const reply = (ok) => { if (answered) return; answered = true; send(ok ? 200 : 500, JSON.stringify({ cleanup: ok }), "application/json"); };
+    r.spawned.on("error", () => reply(false));
+    r.spawned.on("close", (code) => reply(code === 0));
+    return;
   }
   if (url.pathname === "/api/volume/verify" && req.method === "POST") {
     let body = "";

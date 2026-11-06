@@ -266,7 +266,20 @@ fetch('/api/plan').then(r=>r.json()).then(p=>{
     const dot=el('volume-dot'), st=el('volume-state');
     dot.className='dot '+(v.state==='mounted'?'dot-ok':v.state==='sealed'?'dot-unknown':'dot-missing');
     st.textContent=(t[v.state]||v.state)+(v.img?' ('+v.img+')':'');
-    if(v.state==='mounted'){el('to-install').hidden=false;return;}
+    // TEST MODE ONLY: delete the test volume from any end state (mounted,
+    // sealed, after success or failure) to run the whole flow again.
+    const offerCleanup=()=>{if(!v.isTest)return;if(el('vcleanup'))return;
+      const cb=document.createElement('button');cb.className='btn btn-ghost';cb.id='vcleanup';
+      cb.textContent=LANG==='es'?'Eliminar volumen de prueba':'Delete test volume';
+      cb.onclick=async()=>{
+        if(!confirm(LANG==='es'?'Se elimina el volumen de PRUEBA y todo su contenido. ¿Continuar?':'This deletes the TEST volume and everything in it. Continue?'))return;
+        cb.disabled=true;cb.textContent=LANG==='es'?'Eliminando…':'Deleting…';
+        const r=await fetch('/api/volume/cleanup',{method:'POST'}).catch(()=>null);
+        if(r&&r.ok)location.reload();
+        else{cb.disabled=false;cb.textContent=LANG==='es'?'No se pudo eliminar — reintentar':'Could not delete — retry';}
+      };
+      el('volume-go').parentNode.append(cb);};
+    if(v.state==='mounted'){el('volume-go').hidden=true;offerCleanup();el('to-install').hidden=false;return;}
     el('volume-guide').hidden=false;
     const VOLGO=async()=>{
       el('volume-go').disabled=true;
@@ -298,6 +311,7 @@ fetch('/api/plan').then(r=>r.json()).then(p=>{
             clearInterval(poll);
             if((p.done||0)===(p.total||4)&&p.total>0){
               el('volume-progress-count').textContent=LANG==='es'?'\u2713 Volumen creado':'\u2713 Volume created';
+              el('volume-go').hidden=true;offerCleanup();
               el('volume-bar').style.width='100%';el('volume-bar').classList.remove('bar-run');
               dot.className='dot dot-ok';
               st.textContent=LANG==='es'?'Volumen LUKS montado — listo para la instalación':'LUKS volume mounted — ready';
@@ -306,18 +320,18 @@ fetch('/api/plan').then(r=>r.json()).then(p=>{
               el('volume-progress-count').textContent=p.error||(LANG==='es'?'Falló — mirá la consola':'Failed — check the console');
               el('volume-bar').classList.add('bar-error');
               el('volume-retry').hidden=false;
+              offerCleanup();
             }
           }
         }).catch(()=>{});
       },500);
     };
     if(v.state==='sealed'){
-      el('volume-progress-count').textContent=LANG==='es'?'Ya existe un volumen — eliminalo para crear de nuevo':'A volume already exists — delete it to create anew';
-      const cb=document.createElement('button');cb.className='btn btn-ghost btn-verify';cb.id='vcleanup';
-      cb.style.marginTop='10px';
-      cb.textContent=LANG==='es'?'Eliminar volumen de prueba':'Delete test volume';
-      cb.onclick=async()=>{cb.disabled=true;await fetch('/api/volume/cleanup',{method:'POST'});location.reload();};
-      el('volume-guide').append(cb);
+      el('volume-go').hidden=true;
+      el('volume-progress-count').textContent=v.isTest
+        ? (LANG==='es'?'Ya existe un volumen de prueba — eliminalo para crear de nuevo':'A test volume already exists — delete it to create anew')
+        : (LANG==='es'?'Tu volumen ya existe y está sellado: abrilo con ~/mount-aegis.sh y recargá esta página':'Your volume exists and is sealed: open it with ~/mount-aegis.sh and reload this page');
+      offerCleanup();
       return;
     }
     el('volume-go').onclick=async()=>{
