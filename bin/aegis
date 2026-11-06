@@ -86,11 +86,15 @@
 #                          for this stack's containers.
 #   audit                  Run scripts/audit-container.sh against the dev
 #                          container and propagate its exit code.
-#   backup [--dest <dir>]  Snapshot the code/engram volumes into one
+#   backup [--dest <dir>] [--full]
+#                          Snapshot the code/engram volumes into one
 #                          timestamped .tar.gz (default dest: C:/Aegis/backups)
 #                          via a throwaway, network-less container. Prints
 #                          the archive path, size and sha256, and writes a
-#                          secret-free *.manifest.json next to it.
+#                          secret-free *.manifest.json next to it. Skips
+#                          regenerable build output in code (node_modules,
+#                          dist, publish, .NET bin/obj, ... — see
+#                          BACKUP_PRUNE_SH); --full includes it.
 #   restore <archive> [--only code|engram] [--replace] [--force]
 #                          Restore a backup archive into the named volumes
 #                          via a throwaway, network-less container. Refuses
@@ -551,6 +555,100 @@ data_mount_src() {
 # digest. Small, network-less, carries busybox tar (-k/--overwrite) and
 # sha256sum — everything backup/restore/export/import need, nothing more.
 BACKUP_IMAGE="alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc"
+
+# `aegis backup` skips regenerable build output inside the code volume, for
+# every stack in environments.publish.json (node, dotnet, java, go, python,
+# cpp). Runs INSIDE the backup container (busybox sh/find); kept as one string
+# so the count step and the archive step apply the exact same list. Prints one
+# directory per line, relative to <root> (e.g. code/web/node_modules).
+# Only whole DIRECTORIES are listed, never files. Unambiguous names are
+# skipped anywhere; names that are often SOURCE elsewhere (bin, obj, target,
+# build, venv) only next to the project file that produces them. public/ and
+# Go vendor/ are never skipped (both are usually committed source).
+# `aegis backup --full` bypasses this list.
+# shellcheck disable=SC2016
+BACKUP_PRUNE_SH='
+aegis_bk_has() {
+    for f in "$@"; do
+        if [ -e "$f" ]; then return 0; fi
+    done
+    return 1
+}
+aegis_bk_prune_list() {
+    find "$1/code" -type d \( -name node_modules -o -name dist -o -name publish \
+        -o -name .next -o -name .nuxt -o -name .output -o -name .svelte-kit \
+        -o -name .angular -o -name .turbo -o -name .parcel-cache \
+        -o -name __pycache__ -o -name .pytest_cache -o -name .mypy_cache \
+        -o -name .ruff_cache -o -name .tox -o -name .venv -o -name "*.egg-info" \
+        -o -name .gradle -o -name "cmake-build-*" \
+        -o -name bin -o -name obj -o -name target -o -name build -o -name venv \) \
+        -prune -print 2>/dev/null |
+    while IFS= read -r d; do
+        p="${d%/*}"
+        case "${d##*/}" in
+            bin|obj) aegis_bk_has "$p"/*.csproj "$p"/*.fsproj "$p"/*.vbproj "$p"/*.sln || continue ;;
+            target) aegis_bk_has "$p/pom.xml" || continue ;;
+            build) aegis_bk_has "$p/build.gradle" "$p/build.gradle.kts" "$p/CMakeLists.txt" || continue ;;
+            venv) aegis_bk_has "$d/pyvenv.cfg" || continue ;;
+        esac
+        printf "%s\n" "${d#"$1"/}"
+    done
+}
+'
+
+# `aegis restore`, run INSIDE the throwaway container (busybox sh/tar/find).
+# Inputs come from env vars, never from interpolation (a file name is user
+# input): AEGIS_RESTORE_ROOT (where the volumes are mounted), _ARCHIVE,
+# _TARGETS (archive members) and _MODE (merge | replace).
+# merge must keep every existing file and still restore everything else.
+# BusyBox tar -k cannot: it opens each file with O_EXCL and DIES on the first
+# one that exists (archival/libarchive/data_extract_all.c), and cp -n refuses
+# to descend into a directory that exists. So merge extracts into a staging
+# dir, lists what is missing at the destination (sh builtins only, one pass;
+# a missing directory is listed once and copied whole; anything whose
+# destination is a symlink is kept, never written through), and copies that
+# list with tar -T. Every error is a real error: a member missing from the
+# archive, a full disk, a bad gzip.
+# shellcheck disable=SC2016
+RESTORE_SH='
+set -eu
+if (set -o pipefail) 2>/dev/null; then set -o pipefail; fi
+root="$AEGIS_RESTORE_ROOT"
+if [ "$AEGIS_RESTORE_MODE" = replace ]; then
+    # shellcheck disable=SC2086
+    exec tar xzf "$AEGIS_RESTORE_ARCHIVE" -C "$root" --overwrite $AEGIS_RESTORE_TARGETS
+fi
+stage="$root/.aegis-restore-stage"
+cleanup() { rm -rf "$stage"; }
+trap cleanup EXIT
+rm -rf "$stage"
+mkdir "$stage"
+# shellcheck disable=SC2086
+tar xzf "$AEGIS_RESTORE_ARCHIVE" -C "$stage" $AEGIS_RESTORE_TARGETS
+cd "$stage"
+skip=""
+# shellcheck disable=SC2086
+find $AEGIS_RESTORE_TARGETS | while IFS= read -r p; do
+    if [ -n "$skip" ]; then
+        case "$p" in "$skip"/*) continue ;; esac
+    fi
+    d="$root/$p"
+    if [ -e "$d" ] || [ -L "$d" ]; then
+        if [ -d "$p" ] && [ ! -L "$p" ] && [ -d "$d" ] && [ ! -L "$d" ]; then
+            continue
+        fi
+        printf "%s\n" "$p" >&3
+        skip="$p"
+        continue
+    fi
+    printf "%s\n" "$p"
+    skip="$p"
+done > "$stage/.new" 3> "$stage/.kept"
+if [ -s "$stage/.new" ]; then
+    tar cf - -T "$stage/.new" | tar xf - -C "$root"
+fi
+echo "aegis-restore: $(wc -l < "$stage/.new" | tr -d " ") restored, $(wc -l < "$stage/.kept" | tr -d " ") kept (already present, not overwritten)"
+'
 
 # Default host-channel destinations. A C:/Aegis/... default assumes a Windows
 # host with Docker Desktop sharing C:. This template's contract is the opposite
@@ -1880,6 +1978,9 @@ cmd_promote() {
         -v "${repo_native}:/promote-src:ro" \
         -v "$(data_mount_src "$vol"):/data" \
         "$BACKUP_IMAGE" sh -c '
+            # Fail closed, like import: without set -e a failed cp was masked
+            # by the chown after it, and the sandbox was then torn down.
+            set -eu
             if [ -e "$DEST" ]; then
                 if [ "$FORCE" != "1" ]; then
                     echo "aegis: $REL already exists in the workstation code volume." >&2
@@ -6034,10 +6135,12 @@ cmd_status() {
 
     echo
     echo "=== Volumes ==="
+    # Flat mounts (T13): engram nested under the read-only /data fails when
+    # the sources are host binds (LUKS data root).
     if MSYS_NO_PATHCONV=1 docker run --rm --network none \
         -v "$(code_volume_src):/data:ro" \
-        -v "$(engram_volume_src):/data/engram:ro" \
-        "$BACKUP_IMAGE" du -sh /data/code /data/engram 2>/dev/null; then
+        -v "$(engram_volume_src):/engram:ro" \
+        "$BACKUP_IMAGE" du -sh /data/code /engram 2>/dev/null; then
         :
     else
         log "could not read volume sizes (throwaway container failed)."
@@ -6079,9 +6182,12 @@ host_mkdir_p() {
 
 cmd_backup() {
     local dest="$DEFAULT_BACKUP_DIR"
+    # BACKUP_PRUNE_SH decides what "build artifacts" means; --full keeps them.
+    local mode="skip-build-artifacts"
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --dest) [[ $# -ge 2 ]] || { err "--dest requires a value"; exit 2; }; dest="$2"; shift 2 ;;
+            --full) mode="full"; shift ;;
             *) err "unknown option: $1"; exit 2 ;;
         esac
     done
@@ -6099,7 +6205,22 @@ cmd_backup() {
     # cannot create a mountpoint inside a read-only mount and the run fails
     # ("mount ... : read-only file system"). Every source now lands at its own
     # /m/<id>, and /m is a plain directory in the image, so nothing nests.
-    local -a mnts=(-v "$(code_volume_src):/m/wsroot:ro" -v "$(engram_volume_src):/m/engram:ro")
+    # The code volume's ROOT holds code/; only that subdir is mounted, at
+    # /m/code, so the archive step can use ONE -C /m. BusyBox tar keeps only
+    # the last -C (archival/tar.c: a single base_dir), so the former
+    # `-C /m/wsroot ... code -C /m ...` looked for /m/code and missed the
+    # whole code volume. A named volume needs volume-subpath (Engine 26+);
+    # a path-shaped source (AEGIS_CODE_DIR / data root) binds <path>/code.
+    local code_src
+    local -a code_mnt
+    code_src="$(code_volume_src)"
+    case "$code_src" in
+        */*) code_mnt=(-v "${code_src%/}/code:/m/code:ro") ;;
+        *)
+            require_volume_subpath_engine "aegis backup" "monta solo code/ del volumen"
+            code_mnt=(--mount "type=volume,src=${code_src},dst=/m/code,volume-subpath=code,readonly") ;;
+    esac
+    local -a mnts=("${code_mnt[@]}" -v "$(engram_volume_src):/m/engram:ro")
     local -a ids=(code engram)
     if agent_state_mode; then
         local _id _src
@@ -6120,26 +6241,46 @@ cmd_backup() {
 
     # File counts computed from the SAME read-only mounts, before archiving,
     # so the manifest's counts and the archive's contents can never diverge.
+    # The code count leaves out the same build-output directories the archive
+    # skips; the last output line is how many directories were skipped.
     local counts
     local -a rest=()
     local _r
     for _r in "${ids[@]}"; do [[ "$_r" == "code" ]] || rest+=("$_r"); done
     counts="$(MSYS_NO_PATHCONV=1 docker run --rm --network none \
         "${mnts[@]}" \
-        "$BACKUP_IMAGE" sh -c '
-            n=$(find /m/wsroot/code -type f 2>/dev/null | wc -l)
+        "$BACKUP_IMAGE" sh -c "${BACKUP_PRUNE_SH}"'
+            mode=$1; shift
+            : > /tmp/aegis-skip
+            if [ "$mode" != full ]; then
+                aegis_bk_prune_list /m | sed "s|^|/m/|; s|\$|/|" > /tmp/aegis-skip
+            fi
+            if [ -s /tmp/aegis-skip ]; then
+                n=$(find /m/code -type f 2>/dev/null | grep -vF -f /tmp/aegis-skip | wc -l)
+            else
+                n=$(find /m/code -type f 2>/dev/null | wc -l)
+            fi
             echo "${n:-0}"
             for d in "$@"; do
                 find "/m/$d" -type f 2>/dev/null | wc -l
             done
-        ' sh "${rest[@]}")"
+            wc -l < /tmp/aegis-skip
+        ' sh "$mode" "${rest[@]}")"
 
+    # tar -X reads fnmatch patterns, so glob characters in a skipped path are
+    # escaped to match only that literal directory.
     MSYS_NO_PATHCONV=1 docker run --rm --network none \
         "${mnts[@]}" \
         -v "${dest}:/backup" \
-        "$BACKUP_IMAGE" tar czf "/backup/${archive_name}" \
-        -C /m/wsroot "${excludes[@]}" code \
-        -C /m "${excludes[@]}" "${rest[@]}"
+        "$BACKUP_IMAGE" sh -c "${BACKUP_PRUNE_SH}"'
+            out=$1; mode=$2; shift 2
+            : > /tmp/aegis-skip
+            if [ "$mode" != full ]; then
+                aegis_bk_prune_list /m | sed "s/[][*?\\]/\\\\&/g" > /tmp/aegis-skip
+            fi
+            exec tar czf "$out" -X /tmp/aegis-skip "$@"
+        ' sh "/backup/${archive_name}" "$mode" \
+        -C /m "${excludes[@]}" "${ids[@]}"
 
     local archive_path="${dest%/}/${archive_name}"
     local sha256 size_bytes
@@ -6164,9 +6305,11 @@ cmd_backup() {
     done
     local _ver=1
     agent_state_mode && _ver=2
-    printf '{\n  "version": %s,\n  "timestamp": "%s",\n  "archive": "%s",\n  "sha256": "%s",\n  "size_bytes": %s,\n  "image": "%s",\n  "volumes": {%s},\n  "file_counts": {%s}\n}\n' \
+    local artifacts="skipped"
+    [[ "$mode" == "full" ]] && artifacts="included"
+    printf '{\n  "version": %s,\n  "timestamp": "%s",\n  "archive": "%s",\n  "sha256": "%s",\n  "size_bytes": %s,\n  "image": "%s",\n  "build_artifacts": "%s",\n  "volumes": {%s},\n  "file_counts": {%s}\n}\n' \
         "$_ver" "$ts" "$archive_name" "$sha256" "$size_bytes" "$BACKUP_IMAGE" \
-        "$volumes_json" "$counts_json" \
+        "$artifacts" "$volumes_json" "$counts_json" \
         > "${dest%/}/${manifest_name}"
 
     printf '%s\n' "$ts" > "${dest%/}/.last-backup"
@@ -6182,6 +6325,13 @@ cmd_backup() {
         _summary="${_summary}${ids[$_i]}=${_n:-0} "
     done
     log "file counts — ${_summary% }"
+    if [[ "$mode" == "full" ]]; then
+        log "build artifacts included (--full)."
+    else
+        local _skipped
+        _skipped="$(sed -n "$((${#ids[@]} + 1))p" <<<"$counts" | tr -d '[:space:]')"
+        log "skipped ${_skipped:-0} build-output directories (node_modules, dist, publish, bin/obj, target, build, caches) — use --full to include them."
+    fi
 }
 
 # T10 (luks-integration): move volumes that already exist in the daemon into the
@@ -6387,8 +6537,8 @@ cmd_restore() {
         esac
     done
 
-    local tar_flag="-k"   # merge: never overwrite an existing file (default)
-    [[ "$replace" -eq 1 ]] && tar_flag="--overwrite"
+    local restore_mode="merge"   # never overwrite an existing file (default)
+    [[ "$replace" -eq 1 ]] && restore_mode="replace"
 
     log "restoring [${members[*]}] from $archive (mode: $([[ "$replace" -eq 1 ]] && echo REPLACE || echo merge/keep-existing))."
     local archive_dir archive_base
@@ -6398,40 +6548,26 @@ cmd_restore() {
     local extract_targets=""
     for m in "${members[@]}"; do extract_targets="$extract_targets $m"; done
 
-    # Merge mode (-k, the default) makes busybox tar exit non-zero whenever
-    # it SKIPS an already-existing file — exactly the expected outcome of a
-    # merge, not a failure (real-world example hit in this session's own E2E
-    # run: a live engram-data volume already has its own instance lock file,
-    # which merge mode is correctly supposed to leave alone). --replace mode
-    # has no such expected-skip case, so any non-zero exit there IS a real
-    # failure. `set -e` is disabled just around this one call so both modes
-    # can inspect the real exit code instead of aborting the script.
-    local tar_output tar_status
-    set +e
-    tar_output="$(MSYS_NO_PATHCONV=1 docker run --rm --network none \
+    # RESTORE_SH keeps existing files itself in merge mode, so ANY non-zero
+    # exit is a real failure in both modes. (The former `tar -k` treated every
+    # non-zero exit as "a file was kept" — but busybox tar -k aborts at the
+    # first existing file, so that message hid a half-done restore.)
+    # The archive basename travels as an env value, never interpolated into
+    # the script: a filename is user input and may contain quotes or shell
+    # metacharacters.
+    local tar_status=0
+    MSYS_NO_PATHCONV=1 docker run --rm --network none \
         "${mounts[@]}" \
         -v "${archive_dir}:/restore-src:ro" \
+        -e AEGIS_RESTORE_ROOT=/data \
         -e AEGIS_RESTORE_ARCHIVE="/restore-src/${archive_base}" \
-        -e AEGIS_RESTORE_TAR_FLAG="$tar_flag" \
+        -e AEGIS_RESTORE_MODE="$restore_mode" \
         -e AEGIS_RESTORE_TARGETS="$extract_targets" \
-        "$BACKUP_IMAGE" sh -c '
-            # The archive basename is an argument/env value, never interpolated
-            # into this script: a filename is user input and may contain quotes
-            # or shell metacharacters.
-            # shellcheck disable=SC2086
-            tar xzf "$AEGIS_RESTORE_ARCHIVE" -C /data $AEGIS_RESTORE_TAR_FLAG $AEGIS_RESTORE_TARGETS
-        ' 2>&1)"
-    tar_status=$?
-    set -e
-    printf '%s\n' "$tar_output"
+        "$BACKUP_IMAGE" sh -c "$RESTORE_SH" || tar_status=$?
 
     if [[ "$tar_status" -ne 0 ]]; then
-        if [[ "$replace" -eq 1 ]]; then
-            err "restore failed (--replace mode, exit ${tar_status}) — see tar output above."
-            exit 1
-        else
-            log "merge mode: one or more files already existed and were left in place (expected — see tar output above); everything else was restored."
-        fi
+        err "restore failed (${restore_mode} mode, exit ${tar_status}) — see the output above. Files already written stay in place; nothing was deleted."
+        exit 1
     fi
 
     log "restore complete: [${members[*]}]."
@@ -6593,8 +6729,9 @@ build_windows_image() {
 
 # volume-subpath needs Docker Engine 26+. `docker version` reports the SERVER
 # (engine) version, which is the one that matters here — not the client's.
-require_build_windows_engine() {
-    local version major
+# Usage: require_volume_subpath_engine <command> <what it mounts>
+require_volume_subpath_engine() {
+    local what="$1" mounts="$2" version major
     version="$(docker version --format '{{.Server.Version}}' 2>/dev/null || true)"
     if [[ -z "$version" ]]; then
         err "no se pudo consultar la versión de Docker Engine (¿Docker Desktop está corriendo?)."
@@ -6602,10 +6739,14 @@ require_build_windows_engine() {
     fi
     major="${version%%.*}"
     if [[ ! "$major" =~ ^[0-9]+$ ]] || (( major < BUILD_WINDOWS_MIN_ENGINE )); then
-        err "Docker Engine ${version} es demasiado antiguo: 'aegis build windows' necesita Docker Engine ${BUILD_WINDOWS_MIN_ENGINE} o superior"
-        err "(monta solo la raíz del proyecto con volume-subpath, que no existe antes de la 26). Actualiza Docker Desktop y reintenta."
+        err "Docker Engine ${version} es demasiado antiguo: '${what}' necesita Docker Engine ${BUILD_WINDOWS_MIN_ENGINE} o superior"
+        err "(${mounts} con volume-subpath, que no existe antes de la 26). Actualiza Docker Desktop y reintenta."
         exit 1
     fi
+}
+
+require_build_windows_engine() {
+    require_volume_subpath_engine "aegis build windows" "monta solo la raíz del proyecto"
 }
 
 ensure_build_windows_image() {
@@ -7653,7 +7794,7 @@ cmd_help_client_expired() {
 
 Your license expired (aegis account shows it). Until it is extended, these
 still work so your data is never stranded:
-  backup [--dest <dir>]       Back up code and Engram
+  backup [--dest <dir>] [--full]    Back up code and Engram (--full: keep build output)
   export <path> [--dest <dir>]      Copy a file out of the workstation
   stop                        Stop it (your files and sessions are kept)
   down                        Remove the containers (volumes are kept)
@@ -7787,7 +7928,7 @@ Tus datos
   secret put <name> --stdin   Same seal from a pipe (cat <file> | aegis ...)
   secret host set <name> ...  Write an existing key's sidecars, sealed (T39.1)
   secret rm <name>            Remove one secret (no undo)
-  backup [--dest <dir>]       Back up code and Engram
+  backup [--dest <dir>] [--full]    Back up code and Engram (--full: keep build output)
   restore <archive>           Restore a backup (stop the workstation first)
   export <path> [--dest <dir>]      Copy a file out of the workstation
   import <host-path> <path>         Copy a file into the workstation
