@@ -359,6 +359,92 @@ BUILD_WINDOWS_MIN_ENGINE=26
 VOL_CODE="aegis-workstation-code"
 VOL_ENGRAM="aegis-workstation-engram-data"
 
+# T1 (luks-integration): the code volume's docker `-v` SOURCE. The compose
+# file already honours AEGIS_CODE_DIR with its own shape rule (compose:214):
+# a plain name resolves to the declared volume, a path (contains "/") becomes
+# a host bind mount. Every launcher command that touches the code volume must
+# follow the SAME rule, or the container reads from one place while
+# import/export/backup write to another (a silent split-brain — and with the
+# LUKS vault, the bind can live inside the mount while the named volume stays
+# in the daemon's data-root, unencrypted).
+code_volume_src() {
+    local dir="${AEGIS_CODE_DIR:-}"
+    case "$dir" in
+        "") printf '%s' "$VOL_CODE" ;;
+        */*) printf '%s' "$dir" ;;
+        *) printf '%s' "$VOL_CODE" ;;
+    esac
+}
+
+# T3 (luks-integration): with the code volume living on a host bind
+# (AEGIS_CODE_DIR path-shaped), the bind source is INSIDE the LUKS mount. If
+# the vault is sealed that directory does not exist, and Docker would happily
+# CREATE it on the underlying filesystem — writing the user's work
+# unencrypted, silently, exactly the failure the vault exists to prevent. So:
+# refuse before compose, and point at the runbook's own helper.
+require_vault_if_code_dir_is_a_bind() {
+    local dir="${AEGIS_CODE_DIR:-}"
+    case "$dir" in
+        */*) ;;                 # path-shaped: a bind
+        *) return 0 ;;          # plain name: the named volume, no vault involved
+    esac
+    local mnt="${AEGIS_VOLUME_MNT:-/mnt/aegis_secure}"
+    case "${dir%/}/" in
+        "${mnt%/}"/*) ;;         # the bind lives under the vault mountpoint
+        *) return 0 ;;           # some other host folder: not ours to police
+    esac
+    if mountpoint -q "$mnt" 2>/dev/null; then
+        mkdir -p "$dir" 2>/dev/null || true
+        return 0
+    fi
+    err "the Aegis secure volume is sealed — '${mnt}' is not mounted."
+    err "Your code lives at ${dir}, inside the vault, so starting now would write it unencrypted."
+    err "open it first:  sh ~/mount-aegis.sh"
+    return 1
+}
+
+# T2 (luks-integration): one root for every sensitive volume. When
+# AEGIS_DATA_ROOT points inside the mounted vault, each volume becomes a host
+# bind under it (compose already accepts the per-volume overrides) and the
+# caches stay named volumes — they are regenerable, not data.
+derive_data_root() {
+    local root="${AEGIS_DATA_ROOT:-}"
+    [[ -n "$root" ]] || return 0
+    case "$root" in
+        /*) ;;
+        *) err "AEGIS_DATA_ROOT must be an absolute path (got: $root)"; return 1 ;;
+    esac
+    root="${root%/}"
+    : "${AEGIS_CODE_DIR:=${root}/workspace}"
+    : "${AEGIS_HOME_DIR:=${root}/home}"
+    : "${AEGIS_CLAUDE_DIR:=${root}/claude}"
+    : "${AEGIS_OPENCODE_DIR:=${root}/opencode}"
+    : "${AEGIS_GENTLE_AI_DIR:=${root}/gentle-ai}"
+    : "${AEGIS_ENGRAM_DIR:=${root}/engram}"
+    : "${AEGIS_HERDR_DIR:=${root}/herdr}"
+    export AEGIS_CODE_DIR AEGIS_HOME_DIR AEGIS_CLAUDE_DIR AEGIS_OPENCODE_DIR \
+        AEGIS_GENTLE_AI_DIR AEGIS_ENGRAM_DIR AEGIS_HERDR_DIR
+}
+
+# The engram volume follows the same shape rule as the code volume (T1).
+engram_volume_src() {
+    local dir="${AEGIS_ENGRAM_DIR:-}"
+    case "$dir" in
+        */*) printf '%s' "$dir" ;;
+        *) printf '%s' "$VOL_ENGRAM" ;;
+    esac
+}
+
+# resolve_data_path returns the logical volume IDENTITY (VOL_CODE for code),
+# which promote/verify compare against. The docker `-v` flag needs the SOURCE,
+# so every mount goes through this mapper.
+data_mount_src() {
+    case "$1" in
+        "$VOL_CODE") code_volume_src ;;
+        *) printf '%s' "$1" ;;
+    esac
+}
+
 # Pinned by digest (same pattern as every other image reference in this
 # repo — see .devcontainer/docker-compose.yml's egress-proxy image).
 # Verified in this session: `docker pull alpine:3.20` resolved to this
@@ -508,6 +594,9 @@ AEGIS_DEVICE_CREDENTIAL_FILE="${AEGIS_DEVICE_CREDENTIAL_FILE:-$HOME/.aegis/devic
 # image-tag default below already has something to say.
 log() { echo "aegis: $*"; }
 err() { echo "aegis: $*" >&2; }
+
+# T2: AEGIS_DATA_ROOT must be resolved before anything reads AEGIS_*_DIR.
+derive_data_root || exit 2
 
 # 2026-11-04: this used to be one of two entrypoints (feature cli-aegis-dev,
 # see docs/11-aegis-cli.md) switched by AEGIS_CLI_MODE -- `aegis-dev` and its
@@ -934,7 +1023,7 @@ check_no_symlink_escape() {
     # script, so it never needs extra quoting/escaping here. The `for`
     # loop (not a pipe into `while`) keeps `status` in THIS shell, not a
     # pipeline subshell, so `exit "$status"` actually reflects a finding.
-    if ! docker run --rm --network none -e TARGET="$target" -v "${vol}:/data:ro" "$BACKUP_IMAGE" sh -c '
+    if ! docker run --rm --network none -e TARGET="$target" -v "$(data_mount_src "$vol"):/data:ro" "$BACKUP_IMAGE" sh -c '
         [ -e "$TARGET" ] || exit 0
         links="$(find "$TARGET" -type l 2>/dev/null)"
         status=0
@@ -977,9 +1066,28 @@ check_no_symlink_escape() {
 write_compose_env() {
     local dir="${AEGIS_WORKSTATION_DIR%/}/.devcontainer"
     [[ -d "$dir" ]] || return 0
-    local env_file="${dir}/.env" keep=""
+    local env_file="${dir}/.env" keep="" _k _v own=""
+    # T2: strip only the keys THIS run writes. A value the user put in .env by
+    # hand (e.g. AEGIS_CODE_DIR=D:/code) must survive when the shell does not
+    # set it — the launcher owns what it derives, not what it did not.
+    for _k in AEGIS_DATA_ROOT AEGIS_CODE_DIR AEGIS_HOME_DIR AEGIS_CLAUDE_DIR \
+              AEGIS_OPENCODE_DIR AEGIS_GENTLE_AI_DIR AEGIS_ENGRAM_DIR AEGIS_HERDR_DIR; do
+        eval "_v=\${$_k:-}"
+        [[ -n "$_v" ]] && own="${own:+${own}|}${_k}="
+    done
+    unset _k _v
+    # T2: the launcher OWNS a marked block. If the previous .env carried it, all
+    # the derived keys are stripped even when this run sets none — that is what
+    # makes switching BACK to the named volumes work instead of leaving the
+    # last encrypted paths stuck in place.
+    local strip_pat="$own"
+    if [[ -f "$env_file" ]] && grep -qx '# aegis:data-root' "$env_file" 2>/dev/null; then
+        # Our block is in the file: own ALL of it, so unsetting AEGIS_DATA_ROOT
+        # really returns to the named volumes.
+        strip_pat="AEGIS_DATA_ROOT=|AEGIS_CODE_DIR=|AEGIS_HOME_DIR=|AEGIS_CLAUDE_DIR=|AEGIS_OPENCODE_DIR=|AEGIS_GENTLE_AI_DIR=|AEGIS_ENGRAM_DIR=|AEGIS_HERDR_DIR="
+    fi
     if [[ -f "$env_file" ]]; then
-        keep="$(grep -v -E '^(AEGIS_IMAGE_(REGISTRY|REPO|TAG)=|AEGIS_DEV_IMAGE=|# Generated by aegis up|# Read by docker compose on the VS Code path|# Launcher state: )' "$env_file" || true)"
+        keep="$(grep -v -E "^(AEGIS_IMAGE_(REGISTRY|REPO|TAG)=|AEGIS_DEV_IMAGE=|${strip_pat:+${strip_pat}|}AEGIS_MARK_KEEP=|# aegis:data-root$|# Generated by aegis up|# Read by docker compose on the VS Code path|# Launcher state: )" "$env_file" || true)"
         # Collapse the blank lines our block may have left behind, so repeated `aegis up`
         # runs do not grow the file.
         keep="$(printf '%s' "$keep" | sed -e '/^[[:space:]]*$/d')"
@@ -992,6 +1100,19 @@ write_compose_env() {
             "AEGIS_IMAGE_REPO=${AEGIS_IMAGE_REPO}" \
             "AEGIS_IMAGE_TAG=${AEGIS_IMAGE_TAG}" \
             "AEGIS_DEV_IMAGE=${AEGIS_DEV_IMAGE}"
+        # T2: only when the user opted into a data root (or set a per-volume
+        # dir); otherwise compose falls back to the named volumes.
+        local _wrote=0
+        for _k in AEGIS_DATA_ROOT AEGIS_CODE_DIR AEGIS_HOME_DIR AEGIS_CLAUDE_DIR \
+                  AEGIS_OPENCODE_DIR AEGIS_GENTLE_AI_DIR AEGIS_ENGRAM_DIR AEGIS_HERDR_DIR; do
+            eval "_v=\${$_k:-}"
+            if [[ -n "$_v" ]]; then
+                [[ "$_wrote" -eq 0 ]] && printf '%s\n' '# aegis:data-root'
+                _wrote=1
+                printf '%s\n' "${_k}=${_v}"
+            fi
+        done
+        unset _k _v _wrote
         if [[ -n "$keep" ]]; then
             printf '%s\n' "$keep"
         fi
@@ -1130,6 +1251,9 @@ pull_and_verify_published_image() {
 
 cmd_up() {
     [[ $# -eq 0 ]] || { err "usage: aegis up"; exit 2; }
+
+    # T3: never start on top of a sealed vault (see the helper above).
+    require_vault_if_code_dir_is_a_bind || exit 1
 
     # T29: the image now comes from the registry, so it is proven BEFORE compose
     # is allowed to start anything. Leaving verification out of the start path
@@ -1639,7 +1763,7 @@ cmd_promote() {
     MSYS_NO_PATHCONV=1 docker run --rm --network none \
         -e DEST="/data${sub:+/$sub}" -e FORCE="$force" -e REL="/workspace/$rel" \
         -v "${repo_native}:/promote-src:ro" \
-        -v "${vol}:/data" \
+        -v "$(data_mount_src "$vol"):/data" \
         "$BACKUP_IMAGE" sh -c '
             if [ -e "$DEST" ]; then
                 if [ "$FORCE" != "1" ]; then
@@ -5765,8 +5889,8 @@ cmd_status() {
     echo
     echo "=== Volumes ==="
     if MSYS_NO_PATHCONV=1 docker run --rm --network none \
-        -v "${VOL_CODE}:/data:ro" \
-        -v "${VOL_ENGRAM}:/data/engram:ro" \
+        -v "$(code_volume_src):/data:ro" \
+        -v "$(engram_volume_src):/data/engram:ro" \
         "$BACKUP_IMAGE" du -sh /data/code /data/engram 2>/dev/null; then
         :
     else
@@ -5829,8 +5953,8 @@ cmd_backup() {
     # so the manifest's counts and the archive's contents can never diverge.
     local counts
     counts="$(MSYS_NO_PATHCONV=1 docker run --rm --network none \
-        -v "${VOL_CODE}:/data:ro" \
-        -v "${VOL_ENGRAM}:/data/engram:ro" \
+        -v "$(code_volume_src):/data:ro" \
+        -v "$(engram_volume_src):/data/engram:ro" \
         "$BACKUP_IMAGE" sh -c '
             for d in code engram; do
                 find "/data/$d" -type f 2>/dev/null | wc -l
@@ -5841,8 +5965,8 @@ cmd_backup() {
     count_engram="$(sed -n '2p' <<<"$counts" | tr -d '[:space:]')"
 
     MSYS_NO_PATHCONV=1 docker run --rm --network none \
-        -v "${VOL_CODE}:/data:ro" \
-        -v "${VOL_ENGRAM}:/data/engram:ro" \
+        -v "$(code_volume_src):/data:ro" \
+        -v "$(engram_volume_src):/data/engram:ro" \
         -v "${dest}:/backup" \
         "$BACKUP_IMAGE" tar czf "/backup/${archive_name}" -C /data code engram
 
@@ -5931,7 +6055,7 @@ cmd_restore() {
             # code/ inside it, so it mounts at /data (the archive's code/
             # member extracts straight into it); the engram volume mounts at
             # /data/engram exactly like before.
-            code) mounts+=(-v "${VOL_CODE}:/data") ;;
+            code) mounts+=(-v "$(code_volume_src):/data") ;;
             engram) mounts+=(-v "${VOL_ENGRAM}:/data/engram") ;;
         esac
     done
@@ -6024,7 +6148,7 @@ cmd_export() {
     log "exporting /workspace/$rel -> ${dest%/}/${base} (throwaway container, read-only source, --network none)."
     MSYS_NO_PATHCONV=1 docker run --rm --network none \
         -e SRC="/data${sub:+/$sub}" -e DST_BASE="$base" \
-        -v "${vol}:/data:ro" \
+        -v "$(data_mount_src "$vol"):/data:ro" \
         -v "${dest}:/export" \
         "$BACKUP_IMAGE" sh -c '
             [ -e "$SRC" ] || { echo "aegis: nothing at that path" >&2; exit 1; }
@@ -6078,7 +6202,7 @@ cmd_import() {
     MSYS_NO_PATHCONV=1 docker run --rm --network none \
         -e DEST="/data${sub:+/$sub}" -e SRC_BASE="$host_base" -e REPLACE="$replace" \
         -e REL="/workspace/$rel" \
-        -v "${vol}:/data" \
+        -v "$(data_mount_src "$vol"):/data" \
         -v "${host_dir}:/import-src:ro" \
         "$BACKUP_IMAGE" sh -c '
             # Fail closed (T21-era hardening, 2026-10-20): without set -e, a
