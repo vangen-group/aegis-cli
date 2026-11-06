@@ -37,6 +37,13 @@ jobs:
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
           echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
 
+      # The launcher reports the CLI version from a VERSION file that travels
+      # inside the tarball next to `aegis`. release-please may lag behind the
+      # tag, and a stale number there is a lie the user reads first, so stamp it
+      # from the tag BEFORE anything is built.
+      - name: Stamp the CLI version from the tag
+        run: echo "${{ steps.version.outputs.version }}" > VERSION
+
       # Same pinned release the client verifies against (bin/aegis's
       # AEGIS_COSIGN_IMAGE) — a signer and verifier on different cosign
       # versions is exactly the "no signatures found" incident this
@@ -82,7 +89,6 @@ jobs:
       - name: Build the installer wizard bundles
         run: |
           set -eu
-          echo "${{ steps.version.outputs.version }}" > VERSION
           node scripts/build-installer-bundles.mjs --out dist
 
       - name: Create the GitHub Release
