@@ -51,6 +51,35 @@ LOOP=$(sudo losetup -j "$IMG" --output NAME --noheadings 2>/dev/null | cut -d: -
 echo "Aegis secure volume sellado."
 `;
 
+// T11 (luks-integration): the wizard creates the vault, so it must also record
+// the CHOICE. The launcher state (.env) does not exist yet at this point — the
+// workstation may not be installed — so the mode lives in a small durable file
+// the launcher reads on its first `up`. Without it a client ends with a vault
+// nobody uses, believing the data is encrypted.
+const MODE_PATH = (home) => join(home, '.local', 'state', 'aegis', 'mode');
+
+function writeModeState({ home, root, uid = 0, gid = 0 } = {}) {
+    if (!home || !root) return { ok: false, error: 'home and root are required' };
+    const path = MODE_PATH(home);
+    const body = [
+        '# Written by the Aegis installer wizard. The launcher reads it on the',
+        '# first `aegis up` and records the mode in its own state from there.',
+        'AEGIS_ENCRYPTED=1',
+        `AEGIS_DATA_ROOT=${root}`,
+        '',
+    ].join('\n');
+    try {
+        mkdirSync(dirname(path), { recursive: true });
+        writeFileSync(path, body, { mode: 0o644 });
+        // The wizard may run as the invoking user while the tree is root-owned
+        // in some setups: best effort, the file only needs to be readable.
+        try { require('node:child_process').execFileSync('chown', [`${uid || 0}:${gid || 0}`, path], { stdio: 'ignore' }); } catch {}
+        return { ok: true, path };
+    } catch (e) {
+        return { ok: false, error: String(e.message || e) };
+    }
+}
+
 // writeVolumeHelpers → { ok, files:[...] } — never throws on a read-only home;
 // the volume itself is already provisioned at that point.
 function writeVolumeHelpers({ home, img, mnt, mapper, uid, gid } = {}) {
@@ -72,4 +101,4 @@ function writeVolumeHelpers({ home, img, mnt, mapper, uid, gid } = {}) {
     }
 }
 
-module.exports = { writeVolumeHelpers, MOUNT, UMOUNT };
+module.exports = { writeVolumeHelpers, writeModeState, MODE_PATH, MOUNT, UMOUNT };

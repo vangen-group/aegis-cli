@@ -74,3 +74,36 @@ test('a read-only home is reported, not thrown', () => {
     assert.equal(r.ok, false);
     assert.ok(r.error);
 });
+
+// T11: the wizard must record the encrypted choice where the launcher can read
+// it — the launcher state (.env) does not exist before the workstation is
+// installed, so the mode gets its own durable file.
+test('provisioning records the encrypted mode where the launcher will read it (T11)', () => {
+    const { writeModeState, MODE_PATH } = require('../installer/helpers.cjs');
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'aegis-mode-'));
+    try {
+        const r = writeModeState({ home, root: '/mnt/aegis_secure/aegis', uid: 4242, gid: 4343 });
+        assert.equal(r.ok, true, r.error);
+        assert.equal(r.path, MODE_PATH(home));
+        const body = fs.readFileSync(r.path, 'utf8');
+        assert.match(body, /^AEGIS_ENCRYPTED=1$/m);
+        assert.match(body, /^AEGIS_DATA_ROOT=\/mnt\/aegis_secure\/aegis$/m);
+    } finally {
+        fs.rmSync(home, { recursive: true, force: true });
+    }
+});
+
+test('the provisioning path writes the mode after the volume succeeds (T11)', () => {
+    const server = fs.readFileSync(path.join(REPO_ROOT, 'installer', 'server.mjs'), 'utf8');
+    assert.match(server, /writeModeState\(/, 'provisioning must record the mode');
+    const modeAt = server.indexOf('writeModeState({');
+    const helpersAt = server.indexOf('writeVolumeHelpers({', modeAt);
+    assert.ok(modeAt > 0 && helpersAt > modeAt, 'and do it next to the helpers');
+});
+
+test('recording the mode fails closed when it cannot write (T11)', () => {
+    const { writeModeState } = require('../installer/helpers.cjs');
+    const r = writeModeState({ home: '/proc/nope', root: '/x' });
+    assert.equal(r.ok, false);
+    assert.ok(r.error);
+});
