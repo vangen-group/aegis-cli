@@ -7327,7 +7327,9 @@ cmd_version() {
     here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     cli=""
     if [[ -f "${here}/VERSION" ]]; then
-        cli="$(head -n1 "${here}/VERSION" | tr -d '[:space:]')"
+        # release-please writes "0.6.10 # x-release-please-version": take the
+        # number, never the annotation.
+        cli="$(head -n1 "${here}/VERSION" | cut -d' ' -f1 | tr -d '[:space:]')"
     fi
     [[ -n "$cli" ]] || cli="unknown (reinstall the CLI so VERSION lands next to aegis)"
     printf 'aegis CLI          %s\n' "$cli"
