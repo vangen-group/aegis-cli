@@ -5329,6 +5329,17 @@ install_sandbox_template() {
     fi
     cp -R "${src_native}" "${dst_native}"
 
+    # T7 (luks-integration): AGENTS.md is part of the signed bundle, so it is
+    # replaced on every update. When the user had edited it, the generic
+    # "backed up to" line above is too easy to miss — and what gets lost are
+    # their own rules. Name it, and say where the previous copy is.
+    if [[ -n "${backup:-}" && -f "${backup}/AGENTS.md" && -f "${dst_native}/AGENTS.md" ]] \
+        && ! cmp -s "${backup}/AGENTS.md" "${dst_native}/AGENTS.md"; then
+        log "AGENTS.md was replaced by the signed bundle — your previous copy is at:"
+        log "  ${backup}/AGENTS.md"
+        log "  keep your own rules in your repository (code/rules/...), not in this product file."
+    fi
+
     # What the launcher and the sandbox compose resolve from this folder, so a
     # half-copied tree is caught here instead of on the next `aegis sandbox`.
     local missing=0 f
