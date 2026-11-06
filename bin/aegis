@@ -7317,13 +7317,33 @@ cmd_remove_tool() {
 # command has nothing else to say, and silence would be a lie. Works from any
 # resolution of AEGIS_WORKSTATION_DIR: explicit, installed copy or the checkout
 # — the file lives in the template tree either way.
+# `aegis version` answers for BOTH halves, CLI first: the CLI is what the user
+# just installed and needs no license; the workstation version is a licensed
+# product, so without a license there is nothing to report but the way to get
+# one. Reading version.json is local, but "which workstation do I have" only
+# makes sense once the license allows it to exist.
 cmd_version() {
-    local v
-    if ! v="$(_product_version)"; then
-        err "cannot read the product version from $(tildify "${AEGIS_WORKSTATION_DIR%/}/version.json") — run 'aegis install' or 'aegis update'."
-        exit 1
+    local here cli v
+    here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    cli=""
+    if [[ -f "${here}/VERSION" ]]; then
+        cli="$(head -n1 "${here}/VERSION" | tr -d '[:space:]')"
     fi
-    printf 'aegis %s\n' "$v"
+    [[ -n "$cli" ]] || cli="unknown (reinstall the CLI so VERSION lands next to aegis)"
+    printf 'aegis CLI          %s\n' "$cli"
+
+    # `version` is exempt from the gate, so the state was never computed for
+    # this command: ask for it now (it is cached once computed).
+    if ! _client_licensed; then
+        printf 'aegis workstation  needs a license (aegis license activate <license-id>)\n'
+        return 0
+    fi
+
+    if v="$(_product_version)"; then
+        printf 'aegis workstation  %s\n' "$v"
+    else
+        printf 'aegis workstation  not installed (aegis install <license-id>)\n'
+    fi
 }
 
 # ---------------------------------------------------------------------------
@@ -8431,7 +8451,7 @@ main() {
     # (user decision 2026-10-14): backup/export/stop/down/status stay
     # available for it, never for a machine that never had a valid one.
     case "$sub" in
-        version|--version|account|license|help|-h|--help) ;;
+        version|--version|-v|account|license|help|-h|--help) ;;
         backup|export|stop|down|status)
             [[ "$(_client_license_state)" != "none" ]] || _client_unlicensed "$sub"
             ;;
@@ -8505,7 +8525,7 @@ main() {
         secret) cmd_secret "$@" ;;
         profile) cmd_profile "$@" ;;
         telemetry) cmd_telemetry "$@" ;;
-        version|--version) cmd_version ;;
+        version|--version|-v) cmd_version ;;
         backup) cmd_backup "$@" ;;
         restore) cmd_restore "$@" ;;
         export) cmd_export "$@" ;;
