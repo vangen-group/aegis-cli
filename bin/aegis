@@ -443,6 +443,18 @@ agent_state_mode() {
     [[ -n "${AEGIS_DATA_ROOT:-}${AEGIS_HOME_DIR:-}${AEGIS_CLAUDE_DIR:-}${AEGIS_OPENCODE_DIR:-}${AEGIS_GENTLE_AI_DIR:-}${AEGIS_HERDR_DIR:-}" ]]
 }
 
+# id -> docker source for the agent-state volumes.
+agent_state_source() {
+    case "$1" in
+        home)      _vol_or_dir "${AEGIS_HOME_DIR:-}" aegis-workstation-home ;;
+        claude)    _vol_or_dir "${AEGIS_CLAUDE_DIR:-}" aegis-workstation-claude-config ;;
+        opencode)  _vol_or_dir "${AEGIS_OPENCODE_DIR:-}" aegis-workstation-opencode-config ;;
+        gentle-ai) _vol_or_dir "${AEGIS_GENTLE_AI_DIR:-}" aegis-workstation-gentle-ai-state ;;
+        herdr)     _vol_or_dir "${AEGIS_HERDR_DIR:-}" aegis-workstation-herdr-state ;;
+        *) return 1 ;;
+    esac
+}
+
 # One "id<TAB>source" line per agent-state volume.
 agent_state_rows() {
     printf 'home\t%s\n'      "$(_vol_or_dir "${AEGIS_HOME_DIR:-}" aegis-workstation-home)"
@@ -6071,7 +6083,7 @@ cmd_restore() {
     local only="" replace=0 force=0
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --only) [[ $# -ge 2 ]] || { err "--only requires a value (code|engram)"; exit 2; }; only="$2"; shift 2 ;;
+            --only) [[ $# -ge 2 ]] || { err "--only requires a value (code|engram|home|claude|opencode|gentle-ai|herdr)"; exit 2; }; only="$2"; shift 2 ;;
             --replace) replace=1; shift ;;
             --force) force=1; shift ;;
             *) err "unknown option: $1"; exit 2 ;;
@@ -6081,17 +6093,7 @@ cmd_restore() {
         err "archive not found: $archive"
         exit 1
     fi
-    # T5c: a v2 backup also carries the agent-state volumes. Restoring only
-    # code/engram would look like success and silently drop the rest, so refuse
-    # until the restore side understands them.
-    local _manifest="${archive%.tar.gz}.manifest.json"
-    if [[ -f "$_manifest" ]] && grep -q '"version": 2' "$_manifest" 2>/dev/null \
-        && grep -q '"home":' "$_manifest" 2>/dev/null; then
-        err "this archive is a v2 backup: it also contains the agent-state volumes."
-        err "restoring only code/engram would silently drop the rest — use a launcher"
-        err "with T5c slice 2 (restore of agent state) or restore the volumes by hand."
-        exit 3
-    fi
+
     case "$only" in
         ""|code|engram) ;;
         memories)
@@ -6099,7 +6101,7 @@ cmd_restore() {
             err "Your old memories content lives under /workspace/code — see docs/10-workstation.md (single-code-volume)."
             exit 2
             ;;
-        *) err "--only must be one of: code, engram"; exit 2 ;;
+        *) err "--only must be one of: code, engram, home, claude, opencode, gentle-ai, herdr"; exit 2 ;;
     esac
 
     if is_up && [[ "$force" -ne 1 ]]; then
@@ -6125,7 +6127,16 @@ cmd_restore() {
         log "no manifest found next to archive ($manifest) — skipping sha256 verification."
     fi
 
+    # T5c slice 2: a v2 backup carries the agent-state volumes too. The manifest
+    # is what tells us (the archive itself is opaque), so a v1 keeps the old
+    # code+engram behavior and a v2 restores what it actually holds.
+    local _v2=0
+    if [[ -f "$manifest" ]] && grep -qE '"version"[[:space:]]*:[[:space:]]*2' "$manifest" 2>/dev/null \
+        && grep -q '"home"' "$manifest" 2>/dev/null; then
+        _v2=1
+    fi
     local -a members=(code engram)
+    [[ "$_v2" -eq 1 ]] && members=(code engram home claude opencode gentle-ai herdr)
     [[ -n "$only" ]] && members=("$only")
     local -a mounts=()
     local m
@@ -6136,7 +6147,17 @@ cmd_restore() {
             # member extracts straight into it); the engram volume mounts at
             # /data/engram exactly like before.
             code) mounts+=(-v "$(code_volume_src):/data") ;;
-            engram) mounts+=(-v "${VOL_ENGRAM}:/data/engram") ;;
+            engram) mounts+=(-v "$(engram_volume_src):/data/engram") ;;
+            # Same layout the backup used: each agent volume mounts at its own
+            # /data/<id> and the archive member of the same name extracts there.
+            *)
+                if agent_state_source "$m" >/dev/null 2>&1; then
+                    mounts+=(-v "$(agent_state_source "$m"):/data/${m}")
+                else
+                    err "unknown volume for --only: $m"
+                    exit 2
+                fi
+                ;;
         esac
     done
 
