@@ -20,6 +20,7 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 jobs:
   sync:
@@ -81,6 +82,8 @@ jobs:
       - name: Tag a release when the launcher changed
         if: steps.changed.outputs.changed == 'true'
         working-directory: aegis-cli
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           # checkout is shallow and does not bring tags: without this the script
@@ -95,3 +98,8 @@ jobs:
           echo "tagging $NEXT (previous: $LAST)"
           git tag "$NEXT"
           git push origin "$NEXT"
+          # A tag pushed with GITHUB_TOKEN does NOT trigger another workflow
+          # (GitHub's anti-recursion rule), so the Release workflow would never
+          # run and the tag would dangle with no assets. Dispatch it explicitly.
+          gh workflow run release.yml -f tag="$NEXT"
+          echo "dispatched release.yml for $NEXT"
