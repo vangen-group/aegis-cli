@@ -8,6 +8,7 @@ import { HTML, JS, CSS } from "./assets.mjs";
 import { collectPrereqs } from "./prereqs.cjs";
 import { volumeState, verifyStep, PROVISIONING, paths } from "./volume.cjs";
 import { runStep, cleanupTestVolume, isTest, provisionAllScript } from "./provision.cjs";
+import { writeVolumeHelpers } from "./helpers.cjs";
 import { writeFileSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -201,7 +202,23 @@ createServer(async (req, res) => {
       const child = spawn("sh", ["-c", script], { stdio: ["inherit", "inherit", "inherit", "pipe"] });
       child.stdio[3]?.on("data", (d) => (vlog += d));
       child.on("close", (code) => {
-        vlog += code === 0 ? "provision-all done\n" : `provision-all failed (rc=${code})\n`;
+        if (code !== 0) {
+          vlog += `provision-all failed (rc=${code})\n`;
+          return;
+        }
+        // T6: leave the runbook's two tools installed, with the paths and the
+        // INVOKING uid already resolved (never a literal: inside a sudo
+        // context id -u is root).
+        const { img, mnt, mapper } = paths();
+        const uid = typeof process.getuid === "function" ? process.getuid() : 1000;
+        const gid = typeof process.getgid === "function" ? process.getgid() : 1000;
+        const res = writeVolumeHelpers({ home: process.env.HOME, img, mnt, mapper, uid, gid });
+        if (res.ok) {
+          vlog += `[volume] helpers installed: ${res.files.join(", ")}\n`;
+        } else {
+          vlog += `[volume] could not write the helpers: ${res.error}\n`;
+        }
+        vlog += "provision-all done\n";
       });
       return;
     });
