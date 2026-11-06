@@ -267,6 +267,18 @@ test('wizard e2e: banner only while the console waits, a failed run explains its
         assert.equal(done.consolePrompt, null);
         assert.equal(await start(), 409, 'a finished run is not restarted');
 
+        // Stage 3 → 4: a provisioned volume must not block the install
+        // (the volume and install logs used to share one buffer → 409).
+        const confirm = await fetch(base + '/api/confirm', { method: 'POST', headers: H, body: JSON.stringify({ telemetry: false }) });
+        assert.equal(confirm.status, 202, 'the install starts after the volume');
+        let installLog = '';
+        for (let i = 0; i < 100 && !/INSTALL-FINISHED rc=0/.test(installLog); i++) {
+            await sleep(50);
+            installLog = await fetch(base + '/api/log', { headers: H }).then((r) => r.text());
+        }
+        assert.match(installLog, /INSTALLED-OK/);
+        assert.match(installLog, /INSTALL-FINISHED rc=0/);
+        assert.equal((await fetch(base + '/api/confirm', { method: 'POST', headers: H, body: '{}' })).status, 409, 'the install starts once');
     } finally {
         child.kill('SIGKILL');
         clean(box);

@@ -20,7 +20,10 @@ const hostArg = args.indexOf("--host");
 const host = hostArg === -1 ? "127.0.0.1" : args[hostArg + 1] || "127.0.0.1";
 const installSh = process.env.AEGIS_INSTALLER_INSTALL_SH || dirname(fileURLToPath(import.meta.url)) + "/../install.sh";
 const cookie = randomBytes(24).toString("hex");
+// Two buffers: the LUKS volume run and install.sh must never share one —
+// a finished volume run used to make /api/confirm answer 409 (no install).
 let log = "";
+let vlog = "";
 const headers = {
   "Content-Security-Policy": "default-src 'self'",
   "X-Content-Type-Options": "nosniff",
@@ -159,7 +162,8 @@ createServer(async (req, res) => {
   if (url.pathname === "/wizard.js") return send(200, JS, "text/javascript");
   if (url.pathname === "/wizard.css") return send(200, CSS, "text/css");
   if (url.pathname === "/api/plan") return send(200, JSON.stringify(plan(planLang(req.headers.cookie))), "application/json");
-  if (url.pathname === "/api/log") return send(200, log);
+  // The console dock shows both, volume output first.
+  if (url.pathname === "/api/log") return send(200, vlog + log);
   // T4: LUKS secure volume — state detection and READ-ONLY verification of
   // the provisioning steps. The passphrase never touches this server.
   if (url.pathname === "/api/volume/state") {
@@ -185,19 +189,19 @@ createServer(async (req, res) => {
       let consent = false;
       try { consent = JSON.parse(body || "{}").consent === true; } catch {}
       // One run at a time; a FAILED run may be retried (it rolled back).
-      const last = log.slice(log.lastIndexOf("provision-all running"));
-      if (log.includes("provision-all running") && !/provision-all failed/.test(last)) return send(409, "already running");
+      const last = vlog.slice(vlog.lastIndexOf("provision-all running"));
+      if (vlog.includes("provision-all running") && !/provision-all failed/.test(last)) return send(409, "already running");
       send(202, "started");
       const lang = planLang(req.headers.cookie);
-      log += "provision-all running\n";
+      vlog += "provision-all running\n";
       const script = provisionAllScript({ consent, lang });
       // The dialog owns the console (stdin/stdout/stderr inherited, so it is
       // the terminal's foreground job); markers and root output arrive on
       // fd 3. It runs as the user — only its root half uses sudo -n.
       const child = spawn("sh", ["-c", script], { stdio: ["inherit", "inherit", "inherit", "pipe"] });
-      child.stdio[3]?.on("data", (d) => (log += d));
+      child.stdio[3]?.on("data", (d) => (vlog += d));
       child.on("close", (code) => {
-        log += code === 0 ? "provision-all done\n" : `provision-all failed (rc=${code})\n`;
+        vlog += code === 0 ? "provision-all done\n" : `provision-all failed (rc=${code})\n`;
       });
       return;
     });
@@ -213,7 +217,7 @@ createServer(async (req, res) => {
     ];
     const lang = planLang(req.headers.cookie);
     // Only the latest run counts (a retried run starts a fresh marker trail).
-    const run = log.slice(Math.max(0, log.lastIndexOf("provision-all running")));
+    const run = vlog.slice(Math.max(0, vlog.lastIndexOf("provision-all running")));
     const finishedIds = [...run.matchAll(/\[step\] (?:finished|skipped) ([a-z-]+)/g)].map((m) => m[1]);
     const startedIds = [...run.matchAll(/\[step\] started ([a-z-]+)/g)].map((m) => m[1]);
     // UX: the banner shows ONLY while the console is really waiting for the
@@ -272,9 +276,9 @@ createServer(async (req, res) => {
       }
       const r = runStep(step, { consent, spawnFn: (argv, opts) => {
         const child = spawn(argv[0], argv.slice(1), { stdio: ["inherit", "pipe", "pipe"], env });
-        child.stdout?.on("data", (d) => (log += d));
-        child.stderr?.on("data", (d) => (log += d));
-        child.on("close", (code) => (log += `[step] ${step} exit ${code}\n`));
+        child.stdout?.on("data", (d) => (vlog += d));
+        child.stderr?.on("data", (d) => (vlog += d));
+        child.on("close", (code) => (vlog += `[step] ${step} exit ${code}\n`));
         return child;
       } });
       if (!r.ok) return send(400, r.error || "refused");
