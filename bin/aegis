@@ -6135,6 +6135,112 @@ cmd_backup() {
     log "file counts — ${_summary% }"
 }
 
+# T10 (luks-integration): move volumes that already exist in the daemon into the
+# vault. The backup/restore pair can only carry what it can mount, so volumes
+# created before the encrypted layout had no clean path into it.
+cmd_volume() {
+    # main() already removed the subcommand word, so "$@" starts at the
+    # nested verb (migrate-to-vault).
+    local sub="${1:-}"
+    shift || true
+    case "$sub" in
+        migrate-to-vault) cmd_volume_migrate_to_vault "$@" ;;
+        ""|-h|--help)
+            cat >&2 <<'USAGE'
+usage: aegis volume migrate-to-vault [--root <dir>] [--only <id>]... [--replace]
+
+Moves the agent-state volumes (home, claude, opencode, gentle-ai, herdr) from
+the Docker daemon into the encrypted vault. Requires: the vault mounted, the
+stack down, and a target root (--root, AEGIS_DATA_ROOT, or the recorded mode).
+
+Nothing is deleted from the daemon: this is a copy, verify-then-cutover.
+USAGE
+            [[ -z "$sub" ]] && return 2 || return 0 ;;
+        *) err "unknown 'aegis volume' subcommand: $sub"; return 2 ;;
+    esac
+}
+
+cmd_volume_migrate_to_vault() {
+    local root="${AEGIS_DATA_ROOT:-}" replace=0
+    local -a only=()
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --root) [[ $# -ge 2 ]] || { err "--root requires a value"; exit 2; }; root="$2"; shift 2 ;;
+            --only) [[ $# -ge 2 ]] || { err "--only requires a value"; exit 2; }; only+=("$2"); shift 2 ;;
+            --replace) replace=1; shift ;;
+            *) err "unknown option: $1"; exit 2 ;;
+        esac
+    done
+    [[ -n "$root" ]] || root="$(state_get AEGIS_DATA_ROOT)"
+    [[ -n "$root" ]] || { err "no target root: pass --root <dir> (inside the mounted vault) or set AEGIS_DATA_ROOT."; exit 2; }
+    case "$root" in /*) ;; *) err "--root must be an absolute path (got: $root)"; exit 2 ;; esac
+    root="${root%/}"
+
+    # Same rule as `up`: with the vault sealed, the target directory does not
+    # exist and a copy would land on the underlying filesystem, unencrypted.
+    local mnt="${AEGIS_VOLUME_MNT:-/mnt/aegis_secure}"
+    case "${root%/}/" in
+        "${mnt%/}"/*) mountpoint -q "$mnt" 2>/dev/null || {
+            err "the Aegis secure volume is sealed — '${mnt}' is not mounted."
+            err "open it first:  sh ~/mount-aegis.sh"
+            exit 1
+        } ;;
+    esac
+
+    if is_up && [[ "$replace" -ne 1 ]]; then
+        err "the workstation is running — run 'aegis stop' first (nothing should write during the copy)."
+        exit 1
+    fi
+
+    local -a ids=("${only[@]:-}")
+    if [[ ${#ids[@]} -eq 0 || -z "${ids[0]:-}" ]]; then
+        ids=(home claude opencode gentle-ai herdr)
+    fi
+
+    local id src dst before after
+    for id in "${ids[@]}"; do
+        case "$id" in
+            home|claude|opencode|gentle-ai|herdr) ;;
+            code|engram)
+                err "$id: use 'aegis backup' + 'aegis restore' for code and engram (they already follow the mode)."
+                exit 2 ;;
+            *) err "unknown volume: $id"; exit 2 ;;
+        esac
+        # The SOURCE is the named volume that already exists in the daemon; the
+        # destination is the bind the encrypted layout uses.
+        src="aegis-workstation-$(case "$id" in home) printf 'home';; claude) printf 'claude-config';; opencode) printf 'opencode-config';; gentle-ai) printf 'gentle-ai-state';; herdr) printf 'herdr-state';; esac)"
+        dst="${root}/${id}"
+
+        if docker volume inspect "$src" >/dev/null 2>&1; then :; else
+            log "$id: no named volume ($src) — nothing to migrate"
+            continue
+        fi
+        before="$(docker run --rm --network none -v "${src}:/src:ro" "$BACKUP_IMAGE" sh -c 'find /src -type f 2>/dev/null | wc -l' | tr -d '[:space:]')"
+        if [[ "${before:-0}" -eq 0 ]]; then
+            log "$id: the named volume is empty — nothing to migrate"
+            continue
+        fi
+        mkdir -p "$dst" 2>/dev/null || true
+        if [[ "$replace" -ne 1 ]] && [[ -n "$(ls -A "$dst" 2>/dev/null)" ]]; then
+            err "$id: ${dst} already has content — refusing to merge into it (pass --replace to overlay)."
+            exit 1
+        fi
+        log "$id: copying ${before} file(s) from ${src} -> ${dst}"
+        MSYS_NO_PATHCONV=1 docker run --rm --network none \
+            -v "${src}:/src:ro" -v "${dst}:/dst" "$BACKUP_IMAGE" \
+            sh -c 'cp -a /src/. /dst/ && true' || { err "$id: copy failed"; exit 1; }
+        after="$(find "$dst" -type f 2>/dev/null | wc -l | tr -d '[:space:]')"
+        if [[ "${after:-0}" -lt "${before:-0}" ]]; then
+            err "$id: copied ${after:-0} file(s) but the source had ${before} — do NOT cut over yet."
+            exit 1
+        fi
+        log "$id: ok (${after} file(s) in place)"
+    done
+
+    log "done. The named volumes were NOT deleted: verify, then switch on with"
+    log "  AEGIS_ENCRYPTED=1 AEGIS_DATA_ROOT=${root} aegis up"
+}
+
 cmd_restore() {
     local archive="${1:-}"
     [[ -z "$archive" ]] && { err "usage: aegis restore <archive> [--only code|engram] [--replace] [--force]"; exit 2; }
@@ -8303,6 +8409,7 @@ main() {
                     ;;
             esac
             ;;
+        volume) cmd_volume "$@" ;;
         image) cmd_image "$@" ;;
         env) cmd_env "$@" ;;
         add)
