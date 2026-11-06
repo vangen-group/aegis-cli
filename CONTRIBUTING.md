@@ -213,6 +213,19 @@ Automated with [release-please](https://github.com/googleapis/release-please) si
 No manual VERSION edit or `git tag` — doing either by hand now fights the bot
 instead of helping it.
 
+**Launcher syncs release on their own.** The launcher files in `bin/` and
+`config/license-keys.json` come from `aegis-workstation`
+(`templates/workstation/`). `.github/workflows/sync-launcher.yml` copies them
+daily at 07:00 UTC, or on demand (`gh workflow run sync-launcher.yml`). When
+anything changed, it commits `fix(sync): update launcher from
+aegis-workstation@<sha>` to `master`, tags the next patch version
+(`scripts/next-release-tag.sh`), and dispatches `release.yml` for that tag. A
+launcher change merged in `aegis-workstation` therefore reaches clients without
+a release PR here.
+
+`gh workflow run release.yml -f tag=vX.Y.Z` is only for re-signing and
+re-publishing an existing tag.
+
 ## Questions?
 
 - Check existing `bin/aegis` for patterns
