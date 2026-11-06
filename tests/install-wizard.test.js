@@ -174,3 +174,30 @@ test('the plan is platform-specific: windows-wsl names the Ubuntu containment (T
         child.kill('SIGTERM');
     }
 });
+
+// Stage navigation: every panel names ITS stage, every button is translated
+// in both languages, and labels match what the button does.
+test('each stage panel shows its own step number, in both languages', async () => {
+    const { HTML, JS } = await import('../installer/assets.mjs');
+    const panels = { 'card-reqs': 1, 'card-plan': 2, 'card-volume': 3, 'card-run': 4, 'card-done': 5 };
+    const esAt = JS.indexOf('  es: {'), enAt = JS.indexOf('  en: {');
+    const dict = (text) => Object.fromEntries([...text.matchAll(/'([a-z0-9-]+)':'([^']*)'/g)].map((m) => [m[1], m[2]]));
+    const es = dict(JS.slice(esAt, enAt)), en = dict(JS.slice(enAt, JS.indexOf('\n  }', enAt)));
+    for (const [id, n] of Object.entries(panels)) {
+        const section = HTML.slice(HTML.indexOf(`id="${id}"`));
+        const key = /class="eyebrow" data-i18n="([a-z0-9-]+)"/.exec(section)[1];
+        assert.equal(key, `eyebrow${n}`, `${id} must use eyebrow${n}`);
+        assert.match(es[key], new RegExp(`Paso ${n} de 5`), `es ${key}`);
+        assert.match(en[key], new RegExp(`Step ${n} of 5`), `en ${key}`);
+    }
+    for (const m of HTML.matchAll(/<button id="([a-z-]+)"[^>]*>/g)) {
+        if (m[1] === 'lang') continue;
+        const key = /data-i18n="([a-z0-9-]+)"/.exec(m[0])?.[1];
+        assert.ok(key, `button #${m[1]} must be translatable`);
+        assert.ok(es[key] && en[key], `button #${m[1]} label "${key}" exists in es and en`);
+    }
+    const volRetry = /<button id="volume-retry"[^>]*data-i18n="([a-z0-9-]+)"/.exec(HTML)[1];
+    assert.match(es[volRetry], /Reintentar/, 'the volume Retry button says Retry, not "Volver al plan"');
+    assert.ok(!/YES/.test(HTML), 'no stale YES instructions');
+    assert.match(JS, /el\('done'\)\.onclick=\(\)=>go\(5\)/, 'Terminar moves on to the last stage');
+});

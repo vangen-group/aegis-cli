@@ -224,7 +224,8 @@ test('wizard e2e: banner only while the console waits, a failed run explains its
     fs.cpSync(path.join(__dirname, '..', 'installer'), path.join(box.dir, 'installer'), { recursive: true });
     const server = path.join(box.dir, 'installer', 'server.mjs');
     const installStub = path.join(box.dir, 'install.sh');
-    fs.writeFileSync(installStub, 'echo INSTALLED-OK\n');
+    // The first install attempt fails; Retry must be able to run it again.
+    fs.writeFileSync(installStub, `if [ ! -e "${box.dir}/install-failed-once" ]; then touch "${box.dir}/install-failed-once"; echo INSTALL-BROKE; exit 9; fi\necho INSTALLED-OK\n`);
     const child = spawn('script', ['-qec', `"${process.execPath}" "${server}" --port ${port}`, '/dev/null'], {
         env: { ...process.env, PATH: `${box.bin}:${process.env.PATH}`, AEGIS_INSTALLER_TEST_VOLUME: '1', AEGIS_VOLUME_IMG: box.img, AEGIS_VOLUME_MNT: box.mnt, AEGIS_INSTALLER_INSTALL_SH: installStub },
     });
@@ -270,9 +271,17 @@ test('wizard e2e: banner only while the console waits, a failed run explains its
 
         // Stage 3 → 4: a provisioned volume must not block the install
         // (the volume and install logs used to share one buffer → 409).
-        const confirm = await fetch(base + '/api/confirm', { method: 'POST', headers: H, body: JSON.stringify({ telemetry: false }) });
-        assert.equal(confirm.status, 202, 'the install starts after the volume');
+        const confirm = () => fetch(base + '/api/confirm', { method: 'POST', headers: H, body: JSON.stringify({ telemetry: false }) }).then((r) => r.status);
+        assert.equal(await confirm(), 202, 'the install starts after the volume');
         let installLog = '';
+        for (let i = 0; i < 100 && !/INSTALL-FINISHED rc=9/.test(installLog); i++) {
+            await sleep(50);
+            installLog = await fetch(base + '/api/log', { headers: H }).then((r) => r.text());
+        }
+        assert.match(installLog, /INSTALL-FINISHED rc=9/);
+        // Retry after a failed install (used to be 409 forever).
+        assert.equal(await confirm(), 202, 'a failed install can be retried');
+        installLog = '';
         for (let i = 0; i < 100 && !/INSTALL-FINISHED rc=0/.test(installLog); i++) {
             await sleep(50);
             installLog = await fetch(base + '/api/log', { headers: H }).then((r) => r.text());

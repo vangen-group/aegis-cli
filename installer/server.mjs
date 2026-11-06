@@ -334,7 +334,10 @@ createServer(async (req, res) => {
     }), "application/json");
   }
   if (url.pathname === "/api/confirm" && req.method === "POST") {
-    if (log) return send(409, "already started");
+    // One install at a time; a FAILED install may be retried from scratch.
+    if (log && !/INSTALL-FINISHED rc=[1-9]/.test(log)) return send(409, "already started");
+    // Claim the run BEFORE awaiting the body, so a double click cannot start two.
+    log = "starting install.sh...\n";
     let telemetry = false;
     try {
       const body = await new Promise((resolve) => {
@@ -345,6 +348,7 @@ createServer(async (req, res) => {
       });
       telemetry = JSON.parse(body || "{}").telemetry === true;
     } catch {
+      log = "";
       return send(400, "bad body");
     }
     writeTelemetryChoice(telemetry);
@@ -352,7 +356,6 @@ createServer(async (req, res) => {
     child.stdout.on("data", (d) => (log += d));
     child.stderr.on("data", (d) => (log += d));
     child.on("close", (code) => (log += `\nINSTALL-FINISHED rc=${code}\n`));
-    log += "starting install.sh...\n";
     return send(202, "started");
   }
   send(404, "not found");
