@@ -51,3 +51,17 @@ test('the tag step cuts exactly the version the commit step wrote', () => {
     assert.doesNotMatch(tagStep, /next-release-tag\.sh/, 'no second, independent computation');
     assert.match(SYNC, /echo "next=\$\{NEXT\}" >> "\$GITHUB_OUTPUT"/);
 });
+
+// Merging the release PR must publish the release with its assets: a tag
+// created with GITHUB_TOKEN starts no other workflow, so release-please's own
+// workflow dispatches release.yml (v0.6.14 shipped with no assets until a
+// manual run).
+test('release-please dispatches release.yml for the release it just created', () => {
+    const rp = fs.readFileSync(path.join(ROOT, '.github/workflows/release-please.yml'), 'utf8');
+    assert.match(rp, /^\s+- id: release\n\s+uses: googleapis\/release-please-action@/m);
+    assert.match(rp, /if: \$\{\{ steps\.release\.outputs\.release_created == 'true' && env\.HAS_PAT != 'true' \}\}/);
+    assert.match(rp, /TAG: \$\{\{ steps\.release\.outputs\.tag_name \}\}/);
+    assert.match(rp, /gh workflow run release\.yml --repo "\$\{\{ github\.repository \}\}" -f tag="\$TAG"/);
+    assert.match(rp, /^\s+actions: write$/m, 'dispatching needs actions: write');
+    assert.match(rp, /^ {4}env:\n\s+#[^\n]*\n\s+HAS_PAT: \$\{\{ secrets\.RELEASE_PLEASE_TOKEN != '' \}\}/m, 'HAS_PAT is job-level so the step if: can read it');
+});
