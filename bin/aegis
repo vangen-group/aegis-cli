@@ -410,6 +410,21 @@ code_bind_id() {
     printf 'bind:%s' "${id:-unresolved}"
 }
 
+# update-stale-binds: the identity of the install directory every ../ bind and
+# the read-only repo mount come from. `aegis install` moves that directory to
+# <dir>.bak-<ts> and copies the new bundle in its place while the stack is
+# still running. A bind follows the directory, not its path, and the path string
+# compose interpolates (AEGIS_REPO_DIR) never changes — so before this label the
+# `aegis up` after an install reused the container, whose binds stayed on the
+# backup (seen 2026-11-07: /workspace/code/aegis-workstation resolved to
+# workstation.bak-20261107T140025Z). Same shape as code_bind_id: same directory,
+# same value; a fresh copy is a new inode, hence a new value and a recreate.
+repo_bind_id() {
+    local dir="${AEGIS_WORKSTATION_DIR%/}" id=""
+    id="$(stat -Lc '%d:%i' "$dir" 2>/dev/null || stat -Lf '%d:%i' "$dir" 2>/dev/null || true)"
+    printf 'dir:%s' "${id:-unresolved}"
+}
+
 # T3 (luks-integration): with the code volume living on a host bind
 # (AEGIS_CODE_DIR path-shaped), the bind source is INSIDE the LUKS mount. If
 # the vault is sealed that directory does not exist, and Docker would happily
@@ -1417,6 +1432,7 @@ compose() {
     [[ -f "$AEGIS_EXTRA_HOSTS_FILE" ]] && compose_files+=(-f "$AEGIS_EXTRA_HOSTS_FILE")
     AEGIS_REPO_DIR="$(_to_native_path "$repo_dir")" \
     AEGIS_CODE_BIND_ID="$(code_bind_id)" \
+    AEGIS_REPO_BIND_ID="$(repo_bind_id)" \
         docker compose "${compose_files[@]}" "$@"
 }
 
@@ -6679,7 +6695,32 @@ cmd_audit() {
         err "audit-container.sh not found at: $AUDIT_SCRIPT"
         exit 1
     fi
-    bash "$AUDIT_SCRIPT" "$DEV_CONTAINER"
+    AEGIS_AUDIT_DECLARED_BINDS="$(audit_declared_binds)" \
+        bash "$AUDIT_SCRIPT" "$DEV_CONTAINER"
+}
+
+# update-stale-binds (S3): the host binds the encrypted mode resolved for the
+# dev container, "<destination>|<source>" per line, so the audit can tell them
+# apart from a stray host bind (before this, every one of them was a finding on
+# an encrypted install). Only the encrypted mode declares anything: a volume
+# install, or a hand-set AEGIS_CODE_DIR without it, keeps the audit's previous
+# behavior.
+audit_declared_binds() {
+    [[ -n "${AEGIS_DATA_ROOT:-}" ]] || return 0
+    local pair dest dir
+    for pair in \
+        "/workspace|${AEGIS_CODE_DIR:-}" \
+        "/home/dev|${AEGIS_HOME_DIR:-}" \
+        "/home/dev/.claude|${AEGIS_CLAUDE_DIR:-}" \
+        "/home/dev/.config|${AEGIS_OPENCODE_DIR:-}" \
+        "/home/dev/.gentle-ai|${AEGIS_GENTLE_AI_DIR:-}" \
+        "/home/dev/.engram|${AEGIS_ENGRAM_DIR:-}" \
+        "/home/dev/.herdr|${AEGIS_HERDR_DIR:-}"; do
+        dest="${pair%%|*}"; dir="${pair#*|}"
+        case "$dir" in
+            */*) printf '%s|%s\n' "$dest" "$(_to_native_path "${dir%/}")" ;;
+        esac
+    done
 }
 
 # ---------------------------------------------------------------------------
