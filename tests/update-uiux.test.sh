@@ -61,22 +61,31 @@ test_format_eta() {
     assert_equals "_format_eta(3665)" "1h 1m" "$result"
 }
 
-# Test: progress bar generation
+# Test: progress bar generation (shared renderer, bin/aegis "progress renderer")
+# The bar is built by string concatenation: the old `tr ' ' '█'` wrote one of
+# the three UTF-8 bytes of █ and the terminal showed [����].
 test_progress_bar() {
-    printf "Testing progress bar generation...\n"
+    local result
 
-    # Just verify the function runs without error
-    _update_step_progress 0 2>/dev/null
-    printf "${GREEN}✓${NC} _update_step_progress(0) runs\n"
-    passed=$((passed + 1))
+    result=$(LANG=C.UTF-8 pg_bar_string 0)
+    assert_equals "pg_bar_string(0)" "[░░░░░░░░░░░░░░░░░░░░]   0%" "$result"
 
-    _update_step_progress 50 2>/dev/null
-    printf "${GREEN}✓${NC} _update_step_progress(50) runs\n"
-    passed=$((passed + 1))
+    result=$(LANG=C.UTF-8 pg_bar_string 50)
+    assert_equals "pg_bar_string(50)" "[██████████░░░░░░░░░░]  50%" "$result"
 
-    _update_step_progress 100 2>/dev/null
-    printf "${GREEN}✓${NC} _update_step_progress(100) runs\n"
-    passed=$((passed + 1))
+    result=$(LANG=C.UTF-8 pg_bar_string 100)
+    assert_equals "pg_bar_string(100)" "[████████████████████] 100%" "$result"
+
+    result=$(AEGIS_ASCII=1 pg_bar_string 60)
+    assert_equals "pg_bar_string(60, ASCII)" "[============--------]  60%" "$result"
+
+    if LANG=C.UTF-8 pg_bar_string 50 | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1; then
+        printf "${GREEN}✓${NC} pg_bar_string output is valid UTF-8\n"
+        passed=$((passed + 1))
+    else
+        printf "${RED}✗${NC} pg_bar_string output is valid UTF-8\n"
+        failed=$((failed + 1))
+    fi
 }
 
 # Test: logging functions
