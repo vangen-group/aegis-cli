@@ -386,6 +386,30 @@ code_volume_src() {
     esac
 }
 
+# T3 (luks-engine-blindness): a fingerprint of what the code volume's SOURCE
+# resolved to, carried as a CONTAINER LABEL so compose's own config hash can see
+# it. Compose recreates on a config-hash change, and that hash only ever saw the
+# interpolated YAML — never the host's mount state when the container was
+# created. So a container built while the vault was sealed (or while Docker
+# Desktop could not see the submount) survived a later `aegis up` and was
+# indistinguishable from a correct one.
+#
+# The value is the identity of the resolved directory (device + inode), not a
+# timestamp: the same vault mounted twice yields the same label (no spurious
+# recreate on every command), and a directory living on another filesystem —
+# the plaintext VHD, or the same path after the vault was mounted — yields a
+# different one, which is the recreate we want. A named volume names itself.
+code_bind_id() {
+    local dir="${AEGIS_CODE_DIR:-}"
+    case "$dir" in
+        */*) ;;                 # path-shaped: a bind, fingerprint what it is now
+        *) printf 'volume:%s' "$VOL_CODE"; return 0 ;;
+    esac
+    local id=""
+    id="$(stat -Lc '%d:%i' "${dir%/}" 2>/dev/null || stat -Lf '%d:%i' "${dir%/}" 2>/dev/null || true)"
+    printf 'bind:%s' "${id:-unresolved}"
+}
+
 # T3 (luks-integration): with the code volume living on a host bind
 # (AEGIS_CODE_DIR path-shaped), the bind source is INSIDE the LUKS mount. If
 # the vault is sealed that directory does not exist, and Docker would happily
@@ -410,6 +434,135 @@ require_vault_if_code_dir_is_a_bind() {
     err "the Aegis secure volume is sealed — '${mnt}' is not mounted."
     err "Your code lives at ${dir}, inside the vault, so starting now would write it unencrypted."
     err "open it first:  sh ~/mount-aegis.sh"
+    return 1
+}
+
+# T1 (luks-engine-blindness): the guard above answers a HOST-side question
+# ("is the vault mounted HERE?"), and the 2026-11 incident proved that is not
+# the question that decides. Docker Desktop resolved the bind through a bind of
+# the distro root (`/mnt/wslg/distro`, same device+inode as `/`); a bind of `/`
+# does not expose submounts, so the engine saw the plaintext mountpoint stub
+# while the host saw the vault. `mountpoint` said open, compose said
+# "containers up", and the container wrote 5+ hours of work unencrypted.
+#
+# So the marker carries the IDENTITY (device + inode) of the directory the
+# HOST resolved, and a throwaway container has to read it back through the same
+# bind shape the dev service will use. A mismatch, an unreadable marker or a
+# container that cannot start means the engine is resolving some other
+# directory, and starting now would write in the clear.
+#
+# The marker lives in the user's workspace for the duration of the probe only
+# and is removed on every path. `cmd_up` runs this twice: once before the pull
+# (needs an image that is already local) and once after it, which is the
+# definitive pass — that is why a missing local image only defers, never passes.
+_aegis_probe_marker() { printf '%s' ".aegis-mount-probe"; }
+
+aegis_probe_image() {
+    # AEGIS_DEV_IMAGE is the exact image the dev service runs (`--no-build`
+    # means it must be local when compose runs). AEGIS_PROBE_IMAGE is the
+    # deliberate override (tests, CI), and also the only case where the local
+    # existence check is skipped.
+    printf '%s' "${AEGIS_PROBE_IMAGE:-${AEGIS_DEV_IMAGE:-}}"
+}
+
+# 0 when AEGIS_CODE_DIR is a path-shaped bind under the vault mountpoint: the
+# only shape where what the ENGINE resolves can differ from what the HOST sees.
+_code_bind_under_vault() {
+    local dir="${AEGIS_CODE_DIR:-}"
+    case "$dir" in
+        */*) ;;                 # path-shaped: a bind
+        *) return 1 ;;          # plain name: the named volume, no vault involved
+    esac
+    local mnt="${AEGIS_VOLUME_MNT:-/mnt/aegis_secure}"
+    case "${dir%/}/" in
+        "${mnt%/}"/*) return 0 ;;   # the bind lives under the vault mountpoint
+        *) return 1 ;;               # some other host folder: not ours to police
+    esac
+}
+
+# 0 = the engine resolves this bind to the directory the host sees, or there is
+# nothing to prove (a named volume, or a bind outside the vault). 1 = blind.
+require_engine_sees_code_bind() {
+    _code_bind_under_vault || return 0
+    local dir="${AEGIS_CODE_DIR:-}"
+    local mnt="${AEGIS_VOLUME_MNT:-/mnt/aegis_secure}"
+
+    local image marker host_id
+    image="$(aegis_probe_image)"
+    if [[ -z "$image" ]]; then
+        err "no image to probe the engine with — cannot prove that Docker resolves '${dir}' inside '${mnt}'."
+        return 1
+    fi
+    if [[ -z "${AEGIS_PROBE_IMAGE:-}" ]] && ! docker image inspect "$image" >/dev/null 2>&1; then
+        log "engine probe deferred: ${image} is not local yet (it is pulled before compose)."
+        return 0
+    fi
+
+    marker="$(_aegis_probe_marker)"
+    # GNU and BSD stat differ; both print "<device>:<inode>" for the path itself
+    # (-L: follow the mountpoint's own symlink-free resolution, never a symlink).
+    host_id="$(stat -Lc '%d:%i' "${dir%/}" 2>/dev/null || stat -Lf '%d:%i' "${dir%/}" 2>/dev/null || true)"
+    if [[ -z "$host_id" ]]; then
+        err "cannot stat the bind source '${dir}' — refusing to guess what the engine would see there."
+        return 1
+    fi
+
+    local expected="aegis-engine-probe dev=${host_id%%:*} ino=${host_id##*:}"
+    if ! printf '%s\n' "$expected" > "${dir%/}/${marker}" 2>/dev/null; then
+        err "cannot write the engine probe next to '${dir}' — refusing to start."
+        return 1
+    fi
+
+    local seen=""
+    seen="$(docker run --rm --network none -v "${dir%/}:/probe:ro" "$image" \
+        sh -c "cat /probe/${marker}" 2>/dev/null || true)"
+    rm -f "${dir%/}/${marker}" 2>/dev/null || true
+    if [[ "${seen:-}" = "$expected" ]]; then
+        return 0
+    fi
+
+    err "the Docker engine does not see the secure volume — '${mnt}' is mounted on this host, but the engine resolved '${dir}' outside it."
+    err "A bind of the distro root (Docker Desktop + WSL2) does not expose submounts, so the container would read the empty mountpoint stub."
+    err "Anything started now would write your work UNENCRYPTED."
+    err "with the vault OPEN, restart Docker Desktop (quit it completely, start it again), then run: aegis up"
+    return 1
+}
+
+# T2 (luks-engine-blindness): what the RUNNING container actually mounted. The
+# probe above proves the engine resolved the right directory when the container
+# was created; this is the post-start assertion, and the last word before a
+# session attaches. `shell` can attach to a container an OLDER launcher created
+# — the incident's actual shape: `up` found the container from 18:51, said
+# "containers up", and inherited a resolution from before the vault was open.
+#
+# The comparison is the DEVICE behind the two paths: the host's vault mount
+# (`findmnt -T $AEGIS_VOLUME_MNT`) against what /workspace is inside the
+# container. Same device means the container's /workspace is the vault's tree,
+# whatever the paths are called on either side. It fails closed: a container
+# that cannot report its own mount is not "probably fine".
+assert_container_sees_code_bind() {
+    _code_bind_under_vault || return 0
+    local mnt="${AEGIS_VOLUME_MNT:-/mnt/aegis_secure}"
+    local host_src container_src host_dev container_dev
+    host_src="$(findmnt -nr -o SOURCE -T "${mnt%/}" 2>/dev/null | head -n1)"
+    if [[ -z "$host_src" ]]; then
+        err "cannot resolve the device behind '${mnt}' — refusing to guess where '/workspace' lands."
+        return 1
+    fi
+    container_src="$(docker exec "$DEV_CONTAINER" sh -c 'findmnt -nr -o SOURCE -T /workspace' 2>/dev/null | head -n1)"
+    if [[ -z "$container_src" ]]; then
+        err "the container cannot report where '/workspace' lives (findmnt failed in ${DEV_CONTAINER}) — refusing to attach."
+        return 1
+    fi
+    host_dev="${host_src%%[*}"
+    container_dev="${container_src%%[*}"
+    [[ "$host_dev" = "$container_dev" ]] && return 0
+
+    err "the container's '/workspace' is NOT on the secure volume."
+    err "  host:      ${mnt} is ${host_src}"
+    err "  container: /workspace is ${container_src}"
+    err "anything written there now would land UNENCRYPTED."
+    err "with the vault OPEN, restart Docker Desktop, then: aegis down && aegis up"
     return 1
 }
 
@@ -1263,6 +1416,7 @@ compose() {
     local -a compose_files=(-f "$COMPOSE_FILE")
     [[ -f "$AEGIS_EXTRA_HOSTS_FILE" ]] && compose_files+=(-f "$AEGIS_EXTRA_HOSTS_FILE")
     AEGIS_REPO_DIR="$(_to_native_path "$repo_dir")" \
+    AEGIS_CODE_BIND_ID="$(code_bind_id)" \
         docker compose "${compose_files[@]}" "$@"
 }
 
@@ -1778,6 +1932,11 @@ cmd_up() {
     # T3: never start on top of a sealed vault (see the helper above).
     require_vault_if_code_dir_is_a_bind || exit 1
 
+    # T1 (luks-engine-blindness): the vault being mounted HERE says nothing
+    # about what the engine resolves. Prove it (or defer, when nothing is local
+    # to run yet) before anything is pulled or created.
+    require_engine_sees_code_bind || exit 1
+
     # T11: say it out loud the one time it matters — when the mode came from
     # the installer rather than from this shell.
     if [[ "${_AEGIS_ADOPTED_MODE:-0}" = "1" ]]; then
@@ -1888,6 +2047,14 @@ cmd_up() {
     mkdir -p "${BUILD_LOG_DIR%/}"
     local up_rc=0
     pg_watch_start services _pg_compose_counts
+    # T1 (luks-engine-blindness): the definitive engine probe, and it belongs
+    # HERE — immediately before compose creates the container. This is the first
+    # point where the image compose will run is guaranteed to be local
+    # (`--no-build` means an absent image is a failure, not a build), so the
+    # probe can never defer its way past compose. Running it earlier was a hole:
+    # `resolve_dev_image` and the build context come after the pull, so an env
+    # image that had to be removed would have left both earlier passes deferring.
+    require_engine_sees_code_bind || exit 1
     compose up -d --wait --no-build >>"$up_log" 2>&1 || up_rc=$?
     pg_watch_stop
     if [[ "$up_rc" -ne 0 ]]; then
@@ -1896,6 +2063,11 @@ cmd_up() {
         exit 1
     fi
     log "containers up."
+
+    # T2 (luks-engine-blindness): the engine probe answered for the directory at
+    # start time; this answers for the running container, which is what a session
+    # will actually write through. Fails closed, and names both sides.
+    assert_container_sees_code_bind || exit 1
     log "preparing the cache directories."
     docker_exec_path "$DEV_CONTAINER" mkdir -p /home/dev/.cache/go-tmp /home/dev/.cache/exec-tmp
 
@@ -2834,6 +3006,12 @@ _exec_in_container() {
     fi
 
     local rc=0
+    if [[ "$dry_run" -ne 1 ]]; then
+        # T2 (luks-engine-blindness): never attach a session to a /workspace the
+        # vault does not back. This is the check the incident's `aegis shell`
+        # was missing — the container was running and healthy, on the wrong tree.
+        assert_container_sees_code_bind || exit 1
+    fi
     if [[ "$seen_dashdash" -eq 1 ]]; then
         docker_exec_path -i -w "$target" "${env_args[@]}" "$DEV_CONTAINER" "${entry_cmd[@]}" -lc \
             "$(printf '%q ' "${extra_cmd[@]}")" || rc=$?
@@ -8841,23 +9019,34 @@ _client_licensed() {
     [[ "$(_client_license_state)" == "valid" ]]
 }
 
-# valid | expired | none. "expired" means the token IS authentic (signed by an
-# accepted key) and only its window closed: aegis-license.js prints the
+# valid | expired | none | no-node. "expired" means the token IS authentic (signed by
+# an accepted key) and only its window closed: aegis-license.js prints the
 # entitlement report on stdout for exactly that case and nothing for a
-# tampered, untrusted or unreadable one. main() computes it once into
-# _CLIENT_LICENSE_STATE (a $(...) call runs in a subshell and could not cache).
+# tampered, untrusted or unreadable one. "no-node" means the opposite of
+# "none": the token and the keys are there, but nothing on PATH can verify
+# them, so the machine's license state is UNKNOWN — not absent (T4).
+# main() computes it once into _CLIENT_LICENSE_STATE (a $(...) call runs in a
+# subshell and could not cache).
 _CLIENT_LICENSE_STATE=""
 _client_license_state() {
     if [[ -z "$_CLIENT_LICENSE_STATE" ]]; then
         _CLIENT_LICENSE_STATE="none"
-        if [[ -f "$AEGIS_LICENSE_FILE" && -f "$AEGIS_LICENSE_KEYS_FILE" && -f "$LICENSE_JS" ]] \
-            && command -v node >/dev/null 2>&1; then
-            local out rc=0
-            out="$(node "$LICENSE_JS" verify "$AEGIS_LICENSE_FILE" "$AEGIS_LICENSE_KEYS_FILE" 2>/dev/null)" || rc=$?
-            if [[ "$rc" -eq 0 ]]; then
-                _CLIENT_LICENSE_STATE="valid"
-            elif [[ "$rc" -eq 1 && -n "$out" ]]; then
-                _CLIENT_LICENSE_STATE="expired"
+        if [[ -f "$AEGIS_LICENSE_FILE" && -f "$AEGIS_LICENSE_KEYS_FILE" && -f "$LICENSE_JS" ]]; then
+            if ! command -v node >/dev/null 2>&1; then
+                # T4 (luks-engine-blindness): a missing node used to fall through
+                # to "none", and the gate then told a machine with a VALID
+                # license that it had no valid license (2026-11-06, while
+                # 'aegis license' said "node is required ... not found in PATH"
+                # for the exact same condition).
+                _CLIENT_LICENSE_STATE="no-node"
+            else
+                local out rc=0
+                out="$(node "$LICENSE_JS" verify "$AEGIS_LICENSE_FILE" "$AEGIS_LICENSE_KEYS_FILE" 2>/dev/null)" || rc=$?
+                if [[ "$rc" -eq 0 ]]; then
+                    _CLIENT_LICENSE_STATE="valid"
+                elif [[ "$rc" -eq 1 && -n "$out" ]]; then
+                    _CLIENT_LICENSE_STATE="expired"
+                fi
             fi
         fi
     fi
@@ -8867,6 +9056,15 @@ _client_license_state() {
 # Refuses a command that needs a license, before it runs anything.
 _client_unlicensed() {
     local cmd="$1"
+    # T4 (luks-engine-blindness): "cannot read the license" must never be
+    # reported as "has no license". Same cause, and the true diagnostic, as
+    # `aegis license` already gives.
+    if [[ "$(_client_license_state)" = "no-node" ]]; then
+        err "'aegis ${cmd}' cannot check the license: node is required for 'aegis license' (Ed25519 verification) but was not found in PATH."
+        err "the license file is where it belongs (${AEGIS_LICENSE_FILE}) — this is a PATH problem, not a licensing one."
+        err "node managers (nvm, fnm) do not load in a non-interactive shell: put a system node on PATH first."
+        exit 2
+    fi
     err "'aegis ${cmd}' needs a license — this machine has no valid license."
     err "activate it with: aegis license activate <license-id>   (aegis license shows why the current one was refused)"
     exit 2
@@ -8894,6 +9092,11 @@ main() {
     case "$sub" in
         version|--version|-v|account|license|help|-h|--help) ;;
         backup|export|stop|down|status)
+            # "no-node" (T4) passes together with "expired": the license state is
+            # UNKNOWN, not absent, and stranding a client's data because its PATH
+            # lacks node is what the 2026-10-14 decision forbids. Everything that
+            # needs a real entitlement (up, shell, install, ...) still reaches the
+            # default branch below, where only "valid" passes.
             [[ "$(_client_license_state)" != "none" ]] || _client_unlicensed "$sub"
             ;;
         install)
