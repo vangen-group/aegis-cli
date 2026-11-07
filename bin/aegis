@@ -954,7 +954,10 @@ AEGIS_LICENSE_FILE="${AEGIS_LICENSE_FILE:-$HOME/.aegis/license}"
 # aegis-license-keys.json; the installed/checkout copy wins when it exists.
 if [[ -z "${AEGIS_LICENSE_KEYS_FILE:-}" ]]; then
     AEGIS_LICENSE_KEYS_FILE="${AEGIS_WORKSTATION_DIR%/}/config/license-keys.json"
-    if [[ ! -f "$AEGIS_LICENSE_KEYS_FILE" && -f "${SCRIPT_DIR%/}/aegis-license-keys.json" ]]; then
+    # atomic-update S3: an EMPTY installed key set (an install torn by a power
+    # cut) must not read as "no valid license" — that refused the very
+    # `aegis update` that repairs it. The CLI's own keys take over.
+    if [[ ! -s "$AEGIS_LICENSE_KEYS_FILE" && -s "${SCRIPT_DIR%/}/aegis-license-keys.json" ]]; then
         AEGIS_LICENSE_KEYS_FILE="${SCRIPT_DIR%/}/aegis-license-keys.json"
     fi
 fi
@@ -6007,12 +6010,85 @@ cmd_secret_show() {
 # permission error on one old backup is a warning, not a reason to fail an
 # install that already succeeded. Lexicographic sort works because the
 # `%Y%m%dT%H%M%SZ` timestamp format already sorts chronologically.
+# atomic-update: the files an installed configuration cannot work without —
+# the launcher resolves every one of them from AEGIS_WORKSTATION_DIR. Checked
+# for presence AND content: a power cut leaves the name with 0 bytes behind.
+_install_required_files() {
+    printf '%s\n' \
+        .devcontainer/docker-compose.yml .devcontainer/Dockerfile.client \
+        scripts/aegis-env.js scripts/aegis-allowlist.js \
+        scripts/generate-build-context.sh scripts/aegis-build-view.js \
+        scripts/generate-allowlist.sh scripts/audit-container.sh \
+        config/agent-guard.sh config/license-keys.json \
+        config/allowlist-ports.conf AGENTS.md
+}
+
+# Flushes written data to disk. Rename is atomic, but only data already on disk
+# survives a power cut — ext4 can otherwise keep the new names with 0 bytes.
+_flush_to_disk() {
+    sync 2>/dev/null || true
+}
+
+# atomic-update S4: a required file (or version.json / template-sources.env)
+# at 0 bytes means an install was cut mid-write. Prints the empty ones.
+_torn_install_files() {
+    local dir="${1%/}" f
+    [[ -e "${dir}/.devcontainer" ]] || return 0
+    for f in $(_install_required_files) version.json template-sources.env; do
+        # The ports file is user data the CLI rewrites; empty is a valid state.
+        [[ "$f" == config/allowlist-ports.conf ]] && continue
+        if [[ -e "${dir}/${f}" && ! -s "${dir}/${f}" ]]; then
+            printf '%s\n' "$f"
+        fi
+    done
+    return 0
+}
+
+# The newest backup whose required files are all present and non-empty.
+_newest_complete_backup() {
+    local dst="${1%/}" b f ok
+    for b in $(ls -d "${dst}.bak-"* 2>/dev/null | sort -r); do
+        [[ -d "$b" ]] || continue
+        ok=1
+        for f in $(_install_required_files); do
+            [[ -s "${b}/${f}" ]] || { ok=0; break; }
+        done
+        if [[ "$ok" == 1 ]]; then
+            printf '%s' "$b"
+            return 0
+        fi
+    done
+    return 0
+}
+
+# Refuses to run on a torn installed configuration, naming what is empty, the
+# newest complete backup and the repair. The repair commands themselves
+# (install, update) and version/help/license still run: main exempts them.
+_refuse_torn_install() {
+    local dir="${AEGIS_WORKSTATION_DIR%/}" torn backup
+    torn="$(_torn_install_files "$dir")"
+    [[ -n "$torn" ]] || return 0
+    backup="$(_newest_complete_backup "$dir")"
+    err "the installed configuration is damaged — these files are empty (an install or update was cut, e.g. by a power loss):"
+    printf '  %s\n' $torn >&2
+    err "repair it with: aegis update   (reinstalls the configuration; your volumes and data are not touched)"
+    if [[ -n "$backup" ]]; then
+        err "or restore the newest complete backup by hand: mv '${dir}' '${dir}.torn' && mv '${backup}' '${dir}'"
+    fi
+    exit 1
+}
+
 AEGIS_BACKUP_KEEP="${AEGIS_BACKUP_KEEP:-3}"
 _prune_backups() {
     local dst="$1" keep="${2:-$AEGIS_BACKUP_KEEP}" base dir name
     base="$(basename "${dst%/}")"
     dir="$(dirname "${dst%/}")"
     [[ -d "$dir" ]] || return 0
+    # atomic-update: a staging tree left by an install that was cut before its
+    # swap is never read by anything — drop it (the live install is not one).
+    for name in "${dir}/${base}.staging-"*; do
+        [[ -d "$name" ]] && rm -rf "$name" 2>/dev/null
+    done
     local -a backups=()
     for name in "${dir}/${base}.bak-"*; do
         [[ -d "$name" ]] || continue
@@ -6457,58 +6533,108 @@ cmd_install() {
     fi
 
     mkdir -p "$(dirname "${dst_native}")"
-    local _preserved_data_root=""
-    if [[ -d "${dst_native}" ]]; then
-        local backup="${dst_native%/}.bak-$(date -u +%Y%m%dT%H%M%SZ)"
-        log "previous install backed up to: ${backup}"
-        # T14: the copy below replaces the whole configuration tree, .env
-        # included, so the launcher state the user accumulated would vanish —
-        # and the encrypted mode with it (AEGIS_ENCRYPTED / AEGIS_DATA_ROOT).
-        # Carry that block across the replacement.
-        if [[ -f "${dst_native}/.devcontainer/.env" ]] \
-            && grep -qx '# aegis:data-root' "${dst_native}/.devcontainer/.env" 2>/dev/null; then
-            _preserved_data_root="$(sed -n '/^# aegis:data-root$/,$p' "${dst_native}/.devcontainer/.env" \
-                | grep -E '^(# aegis:data-root|AEGIS_[A-Z_]+=)' || true)"
-        fi
-        mv "${dst_native}" "${backup}"
-        _prune_backups "${dst_native}"
+    # atomic-update (2026-11-07 power cut): the new tree is assembled and
+    # validated NEXT TO the install (same filesystem), flushed to disk, and only
+    # then swapped in by rename. A cut before the swap leaves the old install
+    # untouched; after it, the new one is complete on disk. Copying straight into
+    # place (the previous behavior) left 0-byte files behind when the power went.
+    local stage="${dst_native%/}.staging-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+    rm -rf "${stage}"
+    if ! cp -R "${src_native}" "${stage}"; then
+        rm -rf "${stage}"
+        err "could not stage the new configuration next to ${dst} — nothing was changed."
+        exit 1
     fi
-    cp -R "${src_native}" "${dst_native}"
 
-    # T14 (cont.): put the encrypted-mode block back, once, and say so.
-    if [[ -n "${_preserved_data_root:-}" ]]; then
-        local _new_env="${dst_native}/.devcontainer/.env"
-        mkdir -p "$(dirname "${_new_env}")"
-        if ! grep -qx '# aegis:data-root' "${_new_env}" 2>/dev/null; then
-            printf '%s\n' "${_preserved_data_root}" >> "${_new_env}"
-            log "kept the encrypted-mode state across the install (${_new_env##*/})."
+    # T14: the copy replaces the whole configuration tree, .env included, so the
+    # launcher state the user accumulated would vanish — and the encrypted mode
+    # with it (AEGIS_ENCRYPTED / AEGIS_DATA_ROOT). Carry that block across.
+    if [[ -f "${dst_native}/.devcontainer/.env" ]] \
+        && grep -qx '# aegis:data-root' "${dst_native}/.devcontainer/.env" 2>/dev/null; then
+        local _preserved_data_root _new_env="${stage}/.devcontainer/.env"
+        _preserved_data_root="$(sed -n '/^# aegis:data-root$/,$p' "${dst_native}/.devcontainer/.env" \
+            | grep -E '^(# aegis:data-root|AEGIS_[A-Z_]+=)' || true)"
+        if [[ -n "${_preserved_data_root}" ]]; then
+            mkdir -p "$(dirname "${_new_env}")"
+            if ! grep -qx '# aegis:data-root' "${_new_env}" 2>/dev/null; then
+                printf '%s\n' "${_preserved_data_root}" >> "${_new_env}"
+                log "kept the encrypted-mode state across the install (${_new_env##*/})."
+            fi
         fi
     fi
+
+    # Client-redesign L2/T2.1-T2.2: the templates no longer install here. Their
+    # sources persist so the first `aegis sandbox` / `aegis build windows` can
+    # install them lazily — inside the installed copy (the fetched bundle tmp is
+    # removed by the EXIT trap), so they are staged with it. The paths recorded
+    # are the FINAL ones.
+    local lazy_src="${dst_native%/}/template-sources"
+    mkdir -p "${stage}/template-sources"
+    [[ -f "$(_to_native_path "${AEGIS_INSTALL_SANDBOX_SOURCE:-}")/.devcontainer/docker-compose.yml" ]] \
+        && cp -R "$(_to_native_path "${AEGIS_INSTALL_SANDBOX_SOURCE}")" "${stage}/template-sources/sandbox"
+    [[ -f "$(_to_native_path "${AEGIS_INSTALL_BUILD_WINDOWS_SOURCE:-}")/Dockerfile" ]] \
+        && cp -R "$(_to_native_path "${AEGIS_INSTALL_BUILD_WINDOWS_SOURCE}")" "${stage}/template-sources/build-windows"
+    {
+        printf 'AEGIS_INSTALL_SANDBOX_SOURCE=%q\n' "${lazy_src}/sandbox"
+        printf 'AEGIS_INSTALL_BUILD_WINDOWS_SOURCE=%q\n' "${lazy_src}/build-windows"
+    } > "$(_to_native_path "${stage}/template-sources.env")" 2>/dev/null || {
+        rm -rf "${stage}"
+        err "could not persist the template sources — nothing was changed."
+        exit 1
+    }
 
     # Everything the launcher resolves from this folder (see the configuration
-    # block at the top of this file), so a half-copied tree is caught here.
+    # block at the top of this file). Missing OR EMPTY is refused here, before
+    # the current install moves: a half-written tree never goes live.
     # bin/aegis is deliberately NOT required here (T5): aegis-cli's own signed
     # releases own the launcher since T4, and the bundle no longer carries it
     # (client-bundle.txt) — requiring it would reject every install.
-    local missing=0 f
-    local -a required_files=(
-        .devcontainer/docker-compose.yml .devcontainer/Dockerfile.client
-        scripts/aegis-env.js scripts/aegis-allowlist.js
-        scripts/generate-build-context.sh scripts/aegis-build-view.js
-        scripts/generate-allowlist.sh scripts/audit-container.sh
-        config/agent-guard.sh config/license-keys.json
-        config/allowlist-ports.conf AGENTS.md
-    )
-    for f in "${required_files[@]}"; do
-        if [[ ! -e "${dst_native}/${f}" ]]; then
-            err "the copy is missing: ${f}"
-            missing=1
+    local bad=0 f
+    for f in $(_install_required_files); do
+        if [[ ! -e "${stage}/${f}" ]]; then
+            err "the new configuration is missing: ${f}"
+            bad=1
+        elif [[ ! -s "${stage}/${f}" ]]; then
+            err "the new configuration has an empty: ${f}"
+            bad=1
         fi
     done
-    if [[ "${missing}" != "0" ]]; then
-        err "install incomplete — the previous copy is in the backup printed above."
+    if [[ "${bad}" != "0" ]]; then
+        rm -rf "${stage}"
+        if [[ -d "${dst_native}" ]]; then
+            err "install refused — nothing was changed: the current install is untouched."
+        else
+            err "install refused — nothing was installed."
+        fi
         exit 1
     fi
+
+    # Flush before the switch: rename is atomic, but only data already on disk
+    # survives a power cut.
+    _flush_to_disk
+    if [[ -d "${dst_native}" ]]; then
+        # -<pid>: two installs inside one second must not move the old tree
+        # INTO the previous backup (the name used to stop at the second).
+        local backup="${dst_native%/}.bak-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+        if ! mv "${dst_native}" "${backup}"; then
+            rm -rf "${stage}"
+            err "could not move the current install aside — nothing was changed."
+            exit 1
+        fi
+        if ! mv "${stage}" "${dst_native}"; then
+            mv "${backup}" "${dst_native}" 2>/dev/null || true
+            rm -rf "${stage}"
+            err "could not put the new configuration in place — the previous install was restored."
+            exit 1
+        fi
+        log "previous install backed up to: ${backup}"
+        _prune_backups "${dst_native}"
+    elif ! mv "${stage}" "${dst_native}"; then
+        rm -rf "${stage}"
+        err "could not put the new configuration in place at ${dst}."
+        exit 1
+    fi
+    _flush_to_disk
 
     # The helper of the copy just installed, not $ENV_JS: on a first install
     # $ENV_JS still points at whatever the launcher resolved before.
@@ -6536,25 +6662,6 @@ cmd_install() {
             ;;
     esac
 
-    # Client-redesign L2/T2.1-T2.2: the templates no longer install here.
-    # Their sources persist so the first `aegis sandbox` / `aegis build
-    # windows` can install them lazily.
-    # The fetched bundle tmp is removed by the EXIT trap, so the lazy source
-    # must live somewhere persistent: inside the installed copy itself.
-    local lazy_src="${dst_native%/}/template-sources"
-    rm -rf "${lazy_src}"
-    mkdir -p "${lazy_src}"
-    [[ -f "$(_to_native_path "${AEGIS_INSTALL_SANDBOX_SOURCE:-}")/.devcontainer/docker-compose.yml" ]] \
-        && cp -R "$(_to_native_path "${AEGIS_INSTALL_SANDBOX_SOURCE}")" "${lazy_src}/sandbox"
-    [[ -f "$(_to_native_path "${AEGIS_INSTALL_BUILD_WINDOWS_SOURCE:-}")/Dockerfile" ]] \
-        && cp -R "$(_to_native_path "${AEGIS_INSTALL_BUILD_WINDOWS_SOURCE}")" "${lazy_src}/build-windows"
-    {
-        printf 'AEGIS_INSTALL_SANDBOX_SOURCE=%q\n' "${lazy_src}/sandbox"
-        printf 'AEGIS_INSTALL_BUILD_WINDOWS_SOURCE=%q\n' "${lazy_src}/build-windows"
-    } > "$(_to_native_path "${dst_native}/template-sources.env")" 2>/dev/null || {
-        err "could not persist the template sources — the first 'aegis sandbox' or 'aegis build windows' will not find them."
-        exit 1
-    }
     log "the sandbox and build-windows templates install on first use (aegis sandbox / aegis build windows)."
 
     # Client-redesign L4.2: the journey ends pointing at the next command.
@@ -8819,12 +8926,24 @@ _client_install_launcher() {
         [[ "$f" == "aegis" ]] && chmod +x "${dst}/.${f}.new-${stamp}" 2>/dev/null || true
     done
     rm -rf "$(dirname "$staging")"
+    # atomic-update S2: the staged files reach the disk before anything is
+    # renamed over the live CLI.
+    _flush_to_disk
     # Commit: back up, then rename into place. Every step is checked: a failure
     # here is reported as a partial update with its backups, never as success.
+    # The backup is a HARD LINK to the previous file — the same inode, nothing
+    # new to write — so a power cut can no longer leave it at 0 bytes (seen
+    # 2026-11-07 with the old `cp -p`). A filesystem without hard links falls
+    # back to the copy.
     local failed=""
     for f in "${names[@]}"; do
-        if [[ -f "${dst}/${f}" ]] && ! cp -p "${dst}/${f}" "${dst}/${f}.bak-${stamp}"; then
-            failed="$f"; break
+        if [[ -f "${dst}/${f}" ]] \
+            && ! ln -f "${dst}/${f}" "${dst}/${f}.bak-${stamp}" 2>/dev/null; then
+            # No hard links here: a copy, flushed before the live file is replaced.
+            if ! cp -p "${dst}/${f}" "${dst}/${f}.bak-${stamp}"; then
+                failed="$f"; break
+            fi
+            _flush_to_disk
         fi
         if ! mv -f "${dst}/.${f}.new-${stamp}" "${dst}/${f}"; then
             failed="$f"; break
@@ -8836,6 +8955,7 @@ _client_install_launcher() {
         err "restore it from its *.bak-${stamp} files, or run 'aegis update' again."
         return 1
     fi
+    _flush_to_disk
     log "CLI updated in $(tildify "$dst") (previous files: *.bak-${stamp})"
 }
 
@@ -9119,6 +9239,13 @@ main() {
     fi
     local sub="${1:-help}"
     [[ $# -gt 0 ]] && shift || true
+
+    case "$sub" in
+        # down/stop/status stay usable too: stopping what runs must never wait
+        # for the repair (review R4).
+        version|--version|-v|account|license|help|-h|--help|install|update|down|stop|status) ;;
+        *) _refuse_torn_install ;;
+    esac
 
     _CLIENT_LICENSE_STATE="$(_client_license_state)"
     # S1: an ALLOW-list, so it fails closed — a command added to the
