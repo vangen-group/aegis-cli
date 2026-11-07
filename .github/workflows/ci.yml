@@ -133,6 +133,7 @@ jobs:
           entries="$(tar -tzf dist/aegis-cli.tar.gz | sort)"
           expected="$(printf '%s\n' \
             ./ \
+            ./VERSION \
             ./aegis \
             ./aegis-activate.js \
             ./aegis-license-api.js \
