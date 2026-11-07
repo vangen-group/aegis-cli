@@ -52,8 +52,8 @@ jobs:
         timeout-minutes: 3
         run: |
           set -o pipefail
-          node --test --test-timeout=120000 --test-force-exit tests/install-helpers.test.js 2>&1 | tee -a installer-tests.log || {
-            grep -E 'not ok|✖|AssertionError|actual:|expected:|Error' installer-tests.log | head -40 |
+          node --test --test-timeout=120000 --test-force-exit tests/install-helpers.test.js 2>&1 | tee "test-install-helpers.test.js.log" || {
+            grep -E 'not ok|✖|AssertionError|actual:|expected:|Error' "test-install-helpers.test.js.log" | head -40 |
               while IFS= read -r line; do echo "::error::$line"; done
             exit 1
           }
@@ -63,8 +63,8 @@ jobs:
         timeout-minutes: 3
         run: |
           set -o pipefail
-          node --test --test-timeout=120000 --test-force-exit tests/install-provision.test.js 2>&1 | tee -a installer-tests.log || {
-            grep -E 'not ok|✖|AssertionError|actual:|expected:|Error' installer-tests.log | head -40 |
+          node --test --test-timeout=120000 --test-force-exit tests/install-provision.test.js 2>&1 | tee "test-install-provision.test.js.log" || {
+            grep -E 'not ok|✖|AssertionError|actual:|expected:|Error' "test-install-provision.test.js.log" | head -40 |
               while IFS= read -r line; do echo "::error::$line"; done
             exit 1
           }
@@ -74,8 +74,8 @@ jobs:
         timeout-minutes: 3
         run: |
           set -o pipefail
-          node --test --test-timeout=120000 --test-force-exit tests/install-steps.test.js 2>&1 | tee -a installer-tests.log || {
-            grep -E 'not ok|✖|AssertionError|actual:|expected:|Error' installer-tests.log | head -40 |
+          node --test --test-timeout=120000 --test-force-exit tests/install-steps.test.js 2>&1 | tee "test-install-steps.test.js.log" || {
+            grep -E 'not ok|✖|AssertionError|actual:|expected:|Error' "test-install-steps.test.js.log" | head -40 |
               while IFS= read -r line; do echo "::error::$line"; done
             exit 1
           }
@@ -85,8 +85,8 @@ jobs:
         timeout-minutes: 3
         run: |
           set -o pipefail
-          node --test --test-timeout=120000 --test-force-exit tests/install-volume.test.js 2>&1 | tee -a installer-tests.log || {
-            grep -E 'not ok|✖|AssertionError|actual:|expected:|Error' installer-tests.log | head -40 |
+          node --test --test-timeout=120000 --test-force-exit tests/install-volume.test.js 2>&1 | tee "test-install-volume.test.js.log" || {
+            grep -E 'not ok|✖|AssertionError|actual:|expected:|Error' "test-install-volume.test.js.log" | head -40 |
               while IFS= read -r line; do echo "::error::$line"; done
             exit 1
           }
@@ -96,8 +96,8 @@ jobs:
         timeout-minutes: 3
         run: |
           set -o pipefail
-          node --test --test-timeout=120000 --test-force-exit tests/install-wizard-prereqs.test.js 2>&1 | tee -a installer-tests.log || {
-            grep -E 'not ok|✖|AssertionError|actual:|expected:|Error' installer-tests.log | head -40 |
+          node --test --test-timeout=120000 --test-force-exit tests/install-wizard-prereqs.test.js 2>&1 | tee "test-install-wizard-prereqs.test.js.log" || {
+            grep -E 'not ok|✖|AssertionError|actual:|expected:|Error' "test-install-wizard-prereqs.test.js.log" | head -40 |
               while IFS= read -r line; do echo "::error::$line"; done
             exit 1
           }
@@ -107,8 +107,8 @@ jobs:
         timeout-minutes: 3
         run: |
           set -o pipefail
-          node --test --test-timeout=120000 --test-force-exit tests/install-wizard.test.js 2>&1 | tee -a installer-tests.log || {
-            grep -E 'not ok|✖|AssertionError|actual:|expected:|Error' installer-tests.log | head -40 |
+          node --test --test-timeout=120000 --test-force-exit tests/install-wizard.test.js 2>&1 | tee "test-install-wizard.test.js.log" || {
+            grep -E 'not ok|✖|AssertionError|actual:|expected:|Error' "test-install-wizard.test.js.log" | head -40 |
               while IFS= read -r line; do echo "::error::$line"; done
             exit 1
           }
@@ -118,8 +118,8 @@ jobs:
         timeout-minutes: 3
         run: |
           set -o pipefail
-          node --test --test-timeout=120000 --test-force-exit tests/next-release-tag.test.js 2>&1 | tee -a installer-tests.log || {
-            grep -E 'not ok|✖|AssertionError|actual:|expected:|Error' installer-tests.log | head -40 |
+          node --test --test-timeout=120000 --test-force-exit tests/next-release-tag.test.js 2>&1 | tee "test-next-release-tag.test.js.log" || {
+            grep -E 'not ok|✖|AssertionError|actual:|expected:|Error' "test-next-release-tag.test.js.log" | head -40 |
               while IFS= read -r line; do echo "::error::$line"; done
             exit 1
           }

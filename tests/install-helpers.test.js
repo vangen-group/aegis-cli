@@ -16,6 +16,17 @@ function tmp() {
     return fs.mkdtempSync(path.join(os.tmpdir(), 'aegis-helpers-'));
 }
 
+// A home nobody can write: a path UNDER a regular file. mkdir fails at once
+// with ENOTDIR, even as root. (These tests used /proc paths: procfs answers
+// mkdir with ENOENT, and Node's recursive mkdir then retries the parent and the
+// child forever on some versions — CI on node 24 hung here for 6 hours.)
+function unwritableHome() {
+    const dir = tmp();
+    const file = path.join(dir, 'not-a-dir');
+    fs.writeFileSync(file, '');
+    return { home: path.join(file, 'home'), cleanup: () => fs.rmSync(dir, { recursive: true, force: true }) };
+}
+
 test('both helpers are written executable, with the resolved paths (T6)', () => {
     const home = tmp();
     try {
@@ -70,9 +81,14 @@ test('the provisioning path installs the helpers and never hardcodes an owner (s
 });
 
 test('a read-only home is reported, not thrown', () => {
-    const r = writeVolumeHelpers({ home: '/proc/nonexistent-home', img: '/i', mnt: '/m', mapper: 'aegis_vol', uid: 1, gid: 1 });
-    assert.equal(r.ok, false);
-    assert.ok(r.error);
+    const { home, cleanup } = unwritableHome();
+    try {
+        const r = writeVolumeHelpers({ home, img: '/i', mnt: '/m', mapper: 'aegis_vol', uid: 1, gid: 1 });
+        assert.equal(r.ok, false);
+        assert.ok(r.error);
+    } finally {
+        cleanup();
+    }
 });
 
 // T11: the wizard must record the encrypted choice where the launcher can read
@@ -103,7 +119,12 @@ test('the provisioning path writes the mode after the volume succeeds (T11)', ()
 
 test('recording the mode fails closed when it cannot write (T11)', () => {
     const { writeModeState } = require('../installer/helpers.cjs');
-    const r = writeModeState({ home: '/proc/nope', root: '/x' });
-    assert.equal(r.ok, false);
-    assert.ok(r.error);
+    const { home, cleanup } = unwritableHome();
+    try {
+        const r = writeModeState({ home, root: '/x' });
+        assert.equal(r.ok, false);
+        assert.ok(r.error);
+    } finally {
+        cleanup();
+    }
 });
