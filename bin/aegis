@@ -6803,6 +6803,7 @@ cmd_audit() {
         exit 1
     fi
     AEGIS_AUDIT_DECLARED_BINDS="$(audit_declared_binds)" \
+    AEGIS_AUDIT_REPO_DIR="$(_to_native_path "${AEGIS_WORKSTATION_DIR%/}")" \
         bash "$AUDIT_SCRIPT" "$DEV_CONTAINER"
 }
 
