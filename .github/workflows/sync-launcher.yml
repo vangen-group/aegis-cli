@@ -70,7 +70,22 @@ jobs:
           fi
           echo "changed=true" >> "$GITHUB_OUTPUT"
           SOURCE_SHA="$(git -C ../aegis-workstation rev-parse --short HEAD)"
+          # The release this sync cuts is computed BEFORE the commit, so the
+          # commit also moves release-please's manifest and VERSION to it. Without
+          # that, release-please kept counting from 0.2.17 while the tags were
+          # already at v0.6.13, and its standing PR proposed v0.3.0.
+          # checkout is shallow and does not bring tags: without this the script
+          # would see no previous tag and silently skip every release.
+          git fetch --tags --quiet
+          LAST="$(git tag --list 'v*' | sort -V | tail -1)"
+          NEXT="$(sh scripts/next-release-tag.sh "$LAST")"
+          echo "next=${NEXT}" >> "$GITHUB_OUTPUT"
           git add bin/ config/
+          if [ -n "$NEXT" ]; then
+            printf '{\n  ".": "%s"\n}\n' "${NEXT#v}" > .release-please-manifest.json
+            printf '%s # x-release-please-version\n' "${NEXT#v}" > VERSION
+            git add .release-please-manifest.json VERSION
+          fi
           git commit -m "fix(sync): update launcher from aegis-workstation@${SOURCE_SHA}"
           git push
 
@@ -86,11 +101,9 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          # checkout is shallow and does not bring tags: without this the script
-          # would see no previous tag and silently skip every release.
-          git fetch --tags --quiet
+          # The same version the commit step wrote into the manifest and VERSION.
+          NEXT="${{ steps.changed.outputs.next }}"
           LAST="$(git tag --list 'v*' | sort -V | tail -1)"
-          NEXT="$(sh scripts/next-release-tag.sh "$LAST")"
           if [ -z "$NEXT" ]; then
             echo "no previous tag — leaving the first release to a human"
             exit 0
