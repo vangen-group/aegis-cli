@@ -2,6 +2,13 @@
 
 All notable changes to the Aegis CLI are documented here.
 
+## [0.6.15](https://github.com/vangen-group/aegis-cli/compare/v0.6.14...v0.6.15) (2026-11-07)
+
+
+### Bug Fixes
+
+* **release:** publish the assets when the release PR is merged ([#63](https://github.com/vangen-group/aegis-cli/issues/63)) ([8a2b6dd](https://github.com/vangen-group/aegis-cli/commit/8a2b6dd14a28b91b665e0a8c0424a895d8549052))
+
 ## [0.6.14](https://github.com/vangen-group/aegis-cli/compare/v0.6.13...v0.6.14) (2026-11-07)
 
 
