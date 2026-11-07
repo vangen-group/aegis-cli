@@ -8,8 +8,18 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # The suite takes under a minute. Without a cap, a test that left a child
+    # process alive held the runner for GitHub's 6-hour default (every run
+    # from aa65ac2 on, 2026-11-06, ended cancelled at 360 min).
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7.0.1
+
+      # Pinned like aegis-workstation's CI, instead of whatever node the
+      # runner image happens to ship (the flags below need >= 22).
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: '24.x'
 
       - name: Syntax-check bin/aegis
         run: bash -n bin/aegis
@@ -25,7 +35,10 @@ jobs:
         run: |
           set -o pipefail
           node --version
-          node --test tests/*.test.js 2>&1 | tee installer-tests.log || {
+          # --test-timeout fails a hung test by name; --test-force-exit ends a
+          # test file even when a child process or server it started is still
+          # alive, so a leak is a reported failure instead of a silent hang.
+          node --test --test-timeout=120000 --test-force-exit tests/*.test.js 2>&1 | tee installer-tests.log || {
             grep -E 'not ok|✖|AssertionError|actual:|expected:|Error' installer-tests.log | head -40 |
               while IFS= read -r line; do echo "::error::$line"; done
             exit 1
