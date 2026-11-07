@@ -2,6 +2,14 @@
 
 All notable changes to the Aegis CLI are documented here.
 
+## [0.6.14](https://github.com/vangen-group/aegis-cli/compare/v0.6.13...v0.6.14) (2026-11-07)
+
+
+### Bug Fixes
+
+* **ci:** stop the 6-hour test hang and repair the checks it was hiding ([#61](https://github.com/vangen-group/aegis-cli/issues/61)) ([2e63072](https://github.com/vangen-group/aegis-cli/commit/2e630727137c894b0cdc174507bfa66f52132021))
+* **release:** keep release-please on the real version series ([#62](https://github.com/vangen-group/aegis-cli/issues/62)) ([c29233b](https://github.com/vangen-group/aegis-cli/commit/c29233b6465b93d87ba458de12e9ec81298ffbe1))
+
 ## [0.2.17](https://github.com/vangen-group/aegis-cli/compare/v0.2.16...v0.2.17) (2026-11-04)
 
 
