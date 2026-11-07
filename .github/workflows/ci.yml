@@ -29,16 +29,96 @@ jobs:
 
       # Installer wizard suites (node:test). The provisioning dialog tests run
       # on a real pseudo-terminal via util-linux `script` (preinstalled).
-      - name: Run installer tests
-        # Failing assertions are also emitted as annotations, so they show on
-        # the PR (and through the API) without opening the raw log.
+      # One step per test file, each with its own cap: a file that hangs (a
+      # leaked child process keeps the output pipe open, so even
+      # --test-force-exit cannot end the step) is cut after 3 minutes and named
+      # by the step itself. --test-timeout fails a hung test by name;
+      # --test-force-exit ends the file when only a leaked handle remains.
+      - name: Node version
+        run: node --version
+
+      - name: Every test file has its own step below
+        run: |
+          set -eu
+          for f in tests/*.test.js; do
+            grep -q "tests/$(basename "$f") 2>&1" .github/workflows/ci.yml || {
+              echo "::error::$f has no step in .github/workflows/ci.yml — add one, or it never runs in CI"
+              exit 1
+            }
+          done
+
+      - name: "Installer tests: install-helpers.test.js"
+        if: ${{ !cancelled() }}
+        timeout-minutes: 3
         run: |
           set -o pipefail
-          node --version
-          # --test-timeout fails a hung test by name; --test-force-exit ends a
-          # test file even when a child process or server it started is still
-          # alive, so a leak is a reported failure instead of a silent hang.
-          node --test --test-timeout=120000 --test-force-exit tests/*.test.js 2>&1 | tee installer-tests.log || {
+          node --test --test-timeout=120000 --test-force-exit tests/install-helpers.test.js 2>&1 | tee -a installer-tests.log || {
+            grep -E 'not ok|✖|AssertionError|actual:|expected:|Error' installer-tests.log | head -40 |
+              while IFS= read -r line; do echo "::error::$line"; done
+            exit 1
+          }
+
+      - name: "Installer tests: install-provision.test.js"
+        if: ${{ !cancelled() }}
+        timeout-minutes: 3
+        run: |
+          set -o pipefail
+          node --test --test-timeout=120000 --test-force-exit tests/install-provision.test.js 2>&1 | tee -a installer-tests.log || {
+            grep -E 'not ok|✖|AssertionError|actual:|expected:|Error' installer-tests.log | head -40 |
+              while IFS= read -r line; do echo "::error::$line"; done
+            exit 1
+          }
+
+      - name: "Installer tests: install-steps.test.js"
+        if: ${{ !cancelled() }}
+        timeout-minutes: 3
+        run: |
+          set -o pipefail
+          node --test --test-timeout=120000 --test-force-exit tests/install-steps.test.js 2>&1 | tee -a installer-tests.log || {
+            grep -E 'not ok|✖|AssertionError|actual:|expected:|Error' installer-tests.log | head -40 |
+              while IFS= read -r line; do echo "::error::$line"; done
+            exit 1
+          }
+
+      - name: "Installer tests: install-volume.test.js"
+        if: ${{ !cancelled() }}
+        timeout-minutes: 3
+        run: |
+          set -o pipefail
+          node --test --test-timeout=120000 --test-force-exit tests/install-volume.test.js 2>&1 | tee -a installer-tests.log || {
+            grep -E 'not ok|✖|AssertionError|actual:|expected:|Error' installer-tests.log | head -40 |
+              while IFS= read -r line; do echo "::error::$line"; done
+            exit 1
+          }
+
+      - name: "Installer tests: install-wizard-prereqs.test.js"
+        if: ${{ !cancelled() }}
+        timeout-minutes: 3
+        run: |
+          set -o pipefail
+          node --test --test-timeout=120000 --test-force-exit tests/install-wizard-prereqs.test.js 2>&1 | tee -a installer-tests.log || {
+            grep -E 'not ok|✖|AssertionError|actual:|expected:|Error' installer-tests.log | head -40 |
+              while IFS= read -r line; do echo "::error::$line"; done
+            exit 1
+          }
+
+      - name: "Installer tests: install-wizard.test.js"
+        if: ${{ !cancelled() }}
+        timeout-minutes: 3
+        run: |
+          set -o pipefail
+          node --test --test-timeout=120000 --test-force-exit tests/install-wizard.test.js 2>&1 | tee -a installer-tests.log || {
+            grep -E 'not ok|✖|AssertionError|actual:|expected:|Error' installer-tests.log | head -40 |
+              while IFS= read -r line; do echo "::error::$line"; done
+            exit 1
+          }
+
+      - name: "Installer tests: next-release-tag.test.js"
+        if: ${{ !cancelled() }}
+        timeout-minutes: 3
+        run: |
+          set -o pipefail
+          node --test --test-timeout=120000 --test-force-exit tests/next-release-tag.test.js 2>&1 | tee -a installer-tests.log || {
             grep -E 'not ok|✖|AssertionError|actual:|expected:|Error' installer-tests.log | head -40 |
               while IFS= read -r line; do echo "::error::$line"; done
             exit 1
