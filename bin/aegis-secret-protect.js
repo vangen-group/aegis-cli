@@ -15,6 +15,11 @@
 //                      powershell.exe, CurrentUser scope. No extra software
 //                      (every Windows install has PowerShell), no interactive
 //                      prompt (tied silently to the logged-in user).
+//   WSL            -- the same DPAPI call, through WSL interop (powershell.exe
+//                      is a Windows binary reachable from the distro). Before
+//                      wsl-dpapi (2026-11-07) a WSL host is process.platform
+//                      'linux', so DPAPI was never tried and the credential
+//                      ended up in plain text on every WSL client.
 //   Linux (desktop) -- libsecret / freedesktop Secret Service via
 //                      `secret-tool`. No interactive prompt once the login
 //                      keyring is unlocked (the normal state after a
@@ -38,6 +43,7 @@
 // content as the plaintext directly.
 
 const os = require('os');
+const fs = require('fs');
 const crypto = require('crypto');
 const { spawnSync } = require('child_process');
 
@@ -69,7 +75,29 @@ function debugFail(label, run) {
         + ' stderr=' + JSON.stringify(String(run.stderr || '').slice(0, 500)) + '\n');
 }
 
-// --- Windows: DPAPI via powershell.exe --------------------------------------
+// --- Windows / WSL: DPAPI via powershell.exe --------------------------------
+
+// WSL sets these in every process of the distro; the binfmt entry is what
+// makes Windows binaries runnable. A container on a WSL kernel has neither,
+// so it is (correctly) not treated as WSL.
+function isWsl() {
+    if (process.platform !== 'linux') return false;
+    if (process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP) return true;
+    try {
+        return fs.existsSync('/proc/sys/fs/binfmt_misc/WSLInterop');
+    } catch (e) {
+        return false;
+    }
+}
+
+// powershell.exe from PATH (WSL appends the Windows PATH by default), else
+// its fixed location under the C: drive mount.
+function powershellBinary() {
+    if (process.platform === 'win32' || hasCommand('powershell.exe')) return 'powershell.exe';
+    const fallback = process.env.AEGIS_POWERSHELL_FALLBACK
+        || '/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe';
+    return fs.existsSync(fallback) ? fallback : null;
+}
 // System.Security.Cryptography.ProtectedData lives in System.Security.dll,
 // which Windows PowerShell 5.1 (powershell.exe, as opposed to pwsh.exe) does
 // NOT load by default -- Add-Type is required before the type resolves, or
@@ -81,14 +109,23 @@ function dpapiProtect(plaintext) {
         + '$enc = [System.Security.Cryptography.ProtectedData]::Protect($bytes, $null, '
         + '[System.Security.Cryptography.DataProtectionScope]::CurrentUser); '
         + '[Console]::Out.Write([Convert]::ToBase64String($enc))';
-    const run = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
-        input: plaintext, encoding: 'utf8',
+    const ps = powershellBinary();
+    if (!ps) return null;
+    const run = spawnSync(ps, ['-NoProfile', '-NonInteractive', '-Command', script], {
+        input: plaintext, encoding: 'utf8', timeout: 30000,
     });
     if (run.error || run.status !== 0 || !run.stdout) {
         debugFail('dpapiProtect', run);
         return null;
     }
-    return run.stdout.trim();
+    const out = run.stdout.replace(/^\uFEFF/, '').trim();
+    // Only base64 is a DPAPI blob: anything else (a PowerShell banner, an
+    // error printed with exit 0) must never be stored as DPAPI1.
+    if (!/^[A-Za-z0-9+/]+={0,2}$/.test(out)) {
+        debugFail('dpapiProtect (not base64)', run);
+        return null;
+    }
+    return out;
 }
 
 function dpapiUnprotect(blob) {
@@ -97,14 +134,16 @@ function dpapiUnprotect(blob) {
         + '$dec = [System.Security.Cryptography.ProtectedData]::Unprotect($bytes, $null, '
         + '[System.Security.Cryptography.DataProtectionScope]::CurrentUser); '
         + '[Console]::Out.Write([System.Text.Encoding]::UTF8.GetString($dec))';
-    const run = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
-        input: blob, encoding: 'utf8',
+    const ps = powershellBinary();
+    if (!ps) return null;
+    const run = spawnSync(ps, ['-NoProfile', '-NonInteractive', '-Command', script], {
+        input: blob, encoding: 'utf8', timeout: 30000,
     });
     if (run.error || run.status !== 0) {
         debugFail('dpapiUnprotect', run);
         return null;
     }
-    return run.stdout;
+    return run.stdout.replace(/^\uFEFF/, '');
 }
 
 // --- Linux desktop: libsecret / Secret Service via secret-tool -------------
@@ -217,6 +256,10 @@ function protect(plaintext) {
         const gpgBlob = gpgProtect(plaintext);
         if (gpgBlob) return { tag: TAG_GPG, blob: gpgBlob };
     } else {
+        if (isWsl()) {
+            const blob = dpapiProtect(plaintext);
+            if (blob) return { tag: TAG_DPAPI, blob };
+        }
         if (secretToolAvailable()) {
             const ref = secretToolProtect(plaintext);
             if (ref) return { tag: TAG_SECRETTOOL, blob: ref };
@@ -228,6 +271,11 @@ function protect(plaintext) {
         'aegis-secret-protect: WARNING: no secure credential store is available on this machine '
         + '(DPAPI/Keychain/libsecret/gpg) -- storing in plain text. Anyone who copies this file off '
         + 'this machine (backup, zip, USB) gets a usable credential.\n'
+        + (isWsl()
+            ? 'aegis-secret-protect: on WSL this uses Windows DPAPI through powershell.exe, which failed or was not '
+              + 'found -- check that WSL interop is enabled (/proc/sys/fs/binfmt_misc/WSLInterop, [interop] in '
+              + '/etc/wsl.conf) and that powershell.exe runs from this shell.\n'
+            : '')
     );
     return { tag: TAG_PLAIN, blob: Buffer.from(plaintext, 'utf8').toString('base64') };
 }
@@ -236,7 +284,7 @@ function unprotect(tag, blob) {
     switch (tag) {
         case TAG_DPAPI: {
             const out = dpapiUnprotect(blob);
-            if (out === null) throw new Error('could not decrypt with Windows DPAPI (CurrentUser scope) -- wrong user or machine, or the protected data is corrupt');
+            if (out === null) throw new Error('could not decrypt with Windows DPAPI (CurrentUser scope) -- wrong user or machine, the protected data is corrupt, or (on WSL) powershell.exe is not reachable through interop');
             return out;
         }
         case TAG_SECRETTOOL: {
