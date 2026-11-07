@@ -206,9 +206,10 @@ Automated with [release-please](https://github.com/googleapis/release-please) si
 2. Every push to `master` updates (or opens) a standing "chore(master): release X.Y.Z"
    pull request, which bumps `VERSION` and `CHANGELOG.md` for you.
 3. Merge that pull request when you want to ship. The merge itself creates the
-   `vX.Y.Z` tag and the GitHub Release, which triggers
-   `.github/workflows/release.yml` to build, sign (cosign), and attach the
-   release assets.
+   `vX.Y.Z` tag and the GitHub Release. A tag created with `GITHUB_TOKEN` starts
+   no other workflow, so `release-please.yml` then dispatches
+   `.github/workflows/release.yml` itself to build, sign (cosign), and attach
+   the release assets.
 
 No manual VERSION edit or `git tag` — doing either by hand now fights the bot
 instead of helping it.
