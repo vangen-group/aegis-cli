@@ -8,8 +8,18 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # The suite takes under a minute. Without a cap, a test that left a child
+    # process alive held the runner for GitHub's 6-hour default (every run
+    # from aa65ac2 on, 2026-11-06, ended cancelled at 360 min).
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7.0.1
+
+      # Pinned like aegis-workstation's CI, instead of whatever node the
+      # runner image happens to ship (the flags below need >= 22).
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: '24.x'
 
       - name: Syntax-check bin/aegis
         run: bash -n bin/aegis
@@ -19,14 +29,97 @@ jobs:
 
       # Installer wizard suites (node:test). The provisioning dialog tests run
       # on a real pseudo-terminal via util-linux `script` (preinstalled).
-      - name: Run installer tests
-        # Failing assertions are also emitted as annotations, so they show on
-        # the PR (and through the API) without opening the raw log.
+      # One step per test file, each with its own cap: a file that hangs (a
+      # leaked child process keeps the output pipe open, so even
+      # --test-force-exit cannot end the step) is cut after 3 minutes and named
+      # by the step itself. --test-timeout fails a hung test by name;
+      # --test-force-exit ends the file when only a leaked handle remains.
+      - name: Node version
+        run: node --version
+
+      - name: Every test file has its own step below
+        run: |
+          set -eu
+          for f in tests/*.test.js; do
+            grep -q "tests/$(basename "$f") 2>&1" .github/workflows/ci.yml || {
+              echo "::error::$f has no step in .github/workflows/ci.yml — add one, or it never runs in CI"
+              exit 1
+            }
+          done
+
+      - name: "Installer tests: install-helpers.test.js"
+        if: ${{ !cancelled() }}
+        timeout-minutes: 3
         run: |
           set -o pipefail
-          node --version
-          node --test tests/*.test.js 2>&1 | tee installer-tests.log || {
-            grep -E 'not ok|✖|AssertionError|actual:|expected:|Error' installer-tests.log | head -40 |
+          node --test --test-timeout=120000 --test-force-exit tests/install-helpers.test.js 2>&1 | tee "test-install-helpers.test.js.log" || {
+            grep -E 'not ok|✖|AssertionError|actual:|expected:|Error' "test-install-helpers.test.js.log" | head -40 |
+              while IFS= read -r line; do echo "::error::$line"; done
+            exit 1
+          }
+
+      - name: "Installer tests: install-provision.test.js"
+        if: ${{ !cancelled() }}
+        timeout-minutes: 3
+        run: |
+          set -o pipefail
+          node --test --test-timeout=120000 --test-force-exit tests/install-provision.test.js 2>&1 | tee "test-install-provision.test.js.log" || {
+            grep -E 'not ok|✖|AssertionError|actual:|expected:|Error' "test-install-provision.test.js.log" | head -40 |
+              while IFS= read -r line; do echo "::error::$line"; done
+            exit 1
+          }
+
+      - name: "Installer tests: install-steps.test.js"
+        if: ${{ !cancelled() }}
+        timeout-minutes: 3
+        run: |
+          set -o pipefail
+          node --test --test-timeout=120000 --test-force-exit tests/install-steps.test.js 2>&1 | tee "test-install-steps.test.js.log" || {
+            grep -E 'not ok|✖|AssertionError|actual:|expected:|Error' "test-install-steps.test.js.log" | head -40 |
+              while IFS= read -r line; do echo "::error::$line"; done
+            exit 1
+          }
+
+      - name: "Installer tests: install-volume.test.js"
+        if: ${{ !cancelled() }}
+        timeout-minutes: 3
+        run: |
+          set -o pipefail
+          node --test --test-timeout=120000 --test-force-exit tests/install-volume.test.js 2>&1 | tee "test-install-volume.test.js.log" || {
+            grep -E 'not ok|✖|AssertionError|actual:|expected:|Error' "test-install-volume.test.js.log" | head -40 |
+              while IFS= read -r line; do echo "::error::$line"; done
+            exit 1
+          }
+
+      - name: "Installer tests: install-wizard-prereqs.test.js"
+        if: ${{ !cancelled() }}
+        timeout-minutes: 3
+        run: |
+          set -o pipefail
+          node --test --test-timeout=120000 --test-force-exit tests/install-wizard-prereqs.test.js 2>&1 | tee "test-install-wizard-prereqs.test.js.log" || {
+            grep -E 'not ok|✖|AssertionError|actual:|expected:|Error' "test-install-wizard-prereqs.test.js.log" | head -40 |
+              while IFS= read -r line; do echo "::error::$line"; done
+            exit 1
+          }
+
+      - name: "Installer tests: install-wizard.test.js"
+        if: ${{ !cancelled() }}
+        timeout-minutes: 3
+        run: |
+          set -o pipefail
+          node --test --test-timeout=120000 --test-force-exit tests/install-wizard.test.js 2>&1 | tee "test-install-wizard.test.js.log" || {
+            grep -E 'not ok|✖|AssertionError|actual:|expected:|Error' "test-install-wizard.test.js.log" | head -40 |
+              while IFS= read -r line; do echo "::error::$line"; done
+            exit 1
+          }
+
+      - name: "Installer tests: next-release-tag.test.js"
+        if: ${{ !cancelled() }}
+        timeout-minutes: 3
+        run: |
+          set -o pipefail
+          node --test --test-timeout=120000 --test-force-exit tests/next-release-tag.test.js 2>&1 | tee "test-next-release-tag.test.js.log" || {
+            grep -E 'not ok|✖|AssertionError|actual:|expected:|Error' "test-next-release-tag.test.js.log" | head -40 |
               while IFS= read -r line; do echo "::error::$line"; done
             exit 1
           }
@@ -40,6 +133,7 @@ jobs:
           entries="$(tar -tzf dist/aegis-cli.tar.gz | sort)"
           expected="$(printf '%s\n' \
             ./ \
+            ./VERSION \
             ./aegis \
             ./aegis-activate.js \
             ./aegis-license-api.js \
