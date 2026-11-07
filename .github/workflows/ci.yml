@@ -124,6 +124,17 @@ jobs:
             exit 1
           }
 
+      - name: "Installer tests: versioning.test.js"
+        if: ${{ !cancelled() }}
+        timeout-minutes: 3
+        run: |
+          set -o pipefail
+          node --test --test-timeout=120000 --test-force-exit tests/versioning.test.js 2>&1 | tee "test-versioning.test.js.log" || {
+            grep -E 'not ok|✖|AssertionError|actual:|expected:|Error' "test-versioning.test.js.log" | head -40 |
+              while IFS= read -r line; do echo "::error::$line"; done
+            exit 1
+          }
+
       - name: Build the release tarball (no signing, just structure)
         run: bash scripts/build-release-tarball.sh dist/aegis-cli.tar.gz
 

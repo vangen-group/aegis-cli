@@ -219,9 +219,11 @@ instead of helping it.
 daily at 07:00 UTC, or on demand (`gh workflow run sync-launcher.yml`). When
 anything changed, it commits `fix(sync): update launcher from
 aegis-workstation@<sha>` to `master`, tags the next patch version
-(`scripts/next-release-tag.sh`), and dispatches `release.yml` for that tag. A
-launcher change merged in `aegis-workstation` therefore reaches clients without
-a release PR here.
+(`scripts/next-release-tag.sh`), and dispatches `release.yml` for that tag. The same
+sync commit moves `.release-please-manifest.json` and `VERSION` to that version,
+so release-please keeps counting from the real latest release. A launcher change
+merged in `aegis-workstation` therefore reaches clients without a release PR
+here.
 
 `gh workflow run release.yml -f tag=vX.Y.Z` is only for re-signing and
 re-publishing an existing tag.
