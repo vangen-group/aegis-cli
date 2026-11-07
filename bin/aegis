@@ -221,6 +221,12 @@
 #   AEGIS_SANDBOX_ALLOWED_ENVS
 #                           Inline override of the allowlist above (comma/space
 #                           separated), for tests and one-offs.
+#   AEGIS_PROGRESS          always | never | auto (default). Live progress bars
+#                           and spinners (stderr) only when stderr is a
+#                           terminal; steps and results always print.
+#   AEGIS_ASCII             Set to 1 to draw bars with = and - instead of
+#                           block characters (also automatic on a non-UTF-8
+#                           locale).
 #   AEGIS_BACKUP_DIR        Default destination for `aegis backup`. Default:
 #                           C:/Aegis/backups (created if missing).
 #   AEGIS_EXPORT_DIR        Default destination for `aegis export`. Default:
@@ -600,6 +606,8 @@ aegis_bk_prune_list() {
 # Inputs come from env vars, never from interpolation (a file name is user
 # input): AEGIS_RESTORE_ROOT (where the volumes are mounted), _ARCHIVE,
 # _TARGETS (archive members) and _MODE (merge | replace).
+# The extracting tar runs with -v: stdout is the per-file progress stream the
+# launcher counts; messages go to stderr.
 # merge must keep every existing file and still restore everything else.
 # BusyBox tar -k cannot: it opens each file with O_EXCL and DIES on the first
 # one that exists (archival/libarchive/data_extract_all.c), and cp -n refuses
@@ -616,7 +624,7 @@ if (set -o pipefail) 2>/dev/null; then set -o pipefail; fi
 root="$AEGIS_RESTORE_ROOT"
 if [ "$AEGIS_RESTORE_MODE" = replace ]; then
     # shellcheck disable=SC2086
-    exec tar xzf "$AEGIS_RESTORE_ARCHIVE" -C "$root" --overwrite $AEGIS_RESTORE_TARGETS
+    exec tar xzvf "$AEGIS_RESTORE_ARCHIVE" -C "$root" --overwrite $AEGIS_RESTORE_TARGETS
 fi
 stage="$root/.aegis-restore-stage"
 cleanup() { rm -rf "$stage"; }
@@ -624,7 +632,7 @@ trap cleanup EXIT
 rm -rf "$stage"
 mkdir "$stage"
 # shellcheck disable=SC2086
-tar xzf "$AEGIS_RESTORE_ARCHIVE" -C "$stage" $AEGIS_RESTORE_TARGETS
+tar xzvf "$AEGIS_RESTORE_ARCHIVE" -C "$stage" $AEGIS_RESTORE_TARGETS
 cd "$stage"
 skip=""
 # shellcheck disable=SC2086
@@ -647,7 +655,7 @@ done > "$stage/.new" 3> "$stage/.kept"
 if [ -s "$stage/.new" ]; then
     tar cf - -T "$stage/.new" | tar xf - -C "$root"
 fi
-echo "aegis-restore: $(wc -l < "$stage/.new" | tr -d " ") restored, $(wc -l < "$stage/.kept" | tr -d " ") kept (already present, not overwritten)"
+echo "aegis-restore: $(wc -l < "$stage/.new" | tr -d " ") restored, $(wc -l < "$stage/.kept" | tr -d " ") kept (already present, not overwritten)" >&2
 '
 
 # Default host-channel destinations. A C:/Aegis/... default assumes a Windows
@@ -790,8 +798,319 @@ AEGIS_DEVICE_CREDENTIAL_FILE="${AEGIS_DEVICE_CREDENTIAL_FILE:-$HOME/.aegis/devic
 
 # The two messages every command speaks through. Defined this early because the
 # image-tag default below already has something to say.
-log() { echo "aegis: $*"; }
-err() { echo "aegis: $*" >&2; }
+# Both first end a live progress line (see the renderer below), so a message
+# never lands glued to a half-drawn bar.
+log() { [[ "${_PG_LIVE_LINE:-0}" -eq 0 ]] || _pg_clear_line; echo "aegis: $*"; }
+err() { [[ "${_PG_LIVE_LINE:-0}" -eq 0 ]] || _pg_clear_line; echo "aegis: $*" >&2; }
+
+# --- progress renderer (begin) -----------------------------------------------
+# Feature real-progress-bars (odd/tasks/real-progress-bars.md). Steps print to
+# stdout like log(): "N/M <name>" and "✓ Step N complete". The LIVE parts (bar
+# redraws, spinner) go to stderr, and only on a terminal, so pipes, CI and
+# $(...) captures never see control characters. Every number shown comes from
+# a measured counter: no total means no percentage, never a guess.
+# AEGIS_PROGRESS=always|never|auto (default auto: stderr is a tty and TERM is
+# not dumb). AEGIS_ASCII=1, or a non-UTF-8 locale, draws with = and -.
+_PG_STEP=0
+_PG_T0=0
+_PG_LAST_MS=0
+_PG_LIVE_LINE=0
+_PG_SPIN_PID=""
+_PG_BAR_TOTAL=0
+_PG_BAR_CUR=0
+_PG_BAR_UNIT=""
+
+_pg_live() {
+    case "${AEGIS_PROGRESS:-auto}" in
+        always) return 0 ;;
+        never) return 1 ;;
+    esac
+    [[ "${TERM:-}" != "dumb" && -t 2 ]]
+}
+
+_pg_unicode() {
+    [[ -z "${AEGIS_ASCII:-}" ]] || return 1
+    local loc="${LC_ALL:-${LC_CTYPE:-${LANG:-}}}"
+    [[ -z "$loc" || "$loc" == *[Uu][Tt][Ff]-8* || "$loc" == *[Uu][Tt][Ff]8* ]]
+}
+
+# Milliseconds since the epoch (bash 5 EPOCHREALTIME; whole seconds otherwise).
+_pg_now_ms() {
+    if [[ -n "${EPOCHREALTIME:-}" ]]; then
+        local t="${EPOCHREALTIME/[.,]/}"
+        printf '%s' "$(( 10#${t:0:${#t}-3} ))"
+    else
+        printf '%s' "$(( $(date +%s) * 1000 ))"
+    fi
+}
+
+_format_bytes() {
+    awk -v b="$1" 'BEGIN {
+        if (b < 1024) { printf "%d B", b; exit }
+        split("KB MB GB TB", u, " "); i = 0
+        while (b >= 1024 && i < 4) { b /= 1024; i++ }
+        printf "%.1f %s", b, u[i]
+    }'
+}
+
+_format_eta() {
+    local seconds=$1
+    if (( seconds < 60 )); then
+        printf '%ds' "$seconds"
+    elif (( seconds < 3600 )); then
+        printf '%dm %ds' "$((seconds / 60))" "$((seconds % 60))"
+    else
+        printf '%dh %dm' "$((seconds / 3600))" "$(( (seconds % 3600) / 60 ))"
+    fi
+}
+
+# pg_bar_string <percent 0-100> -> "[████░░…] NN%"
+pg_bar_string() {
+    local pct=$1 width=20 full="█" rest="░" bar="" i filled
+    _pg_unicode || { full="="; rest="-"; }
+    (( pct < 0 )) && pct=0
+    (( pct > 100 )) && pct=100
+    filled=$(( pct * width / 100 ))
+    for (( i = 0; i < filled; i++ )); do bar+="$full"; done
+    for (( i = filled; i < width; i++ )); do bar+="$rest"; done
+    printf '[%s] %3d%%' "$bar" "$pct"
+}
+
+# _pg_fit <text>: the text cut to the terminal width minus one column, marked
+# with "…". A live line wider than the terminal wraps, and the \r redraw then
+# stacks lines instead of replacing one.
+_pg_fit() {
+    local text="$1" cols="${COLUMNS:-}"
+    [[ "$cols" =~ ^[0-9]+$ && "$cols" -gt 0 ]] || cols="$(tput cols 2>/dev/null || echo 80)"
+    [[ "$cols" =~ ^[0-9]+$ && "$cols" -gt 10 ]] || cols=80
+    if (( ${#text} > cols - 1 )); then
+        text="${text:0:cols-2}…"
+    fi
+    printf '%s' "$text"
+}
+
+_pg_clear_line() {
+    if [[ "$_PG_LIVE_LINE" -eq 1 ]]; then
+        printf '\r\033[K' >&2
+        _PG_LIVE_LINE=0
+    fi
+}
+
+# pg_step <n> <of> <name>
+pg_step() {
+    _pg_clear_line
+    _PG_STEP=$1
+    _PG_T0="$(_pg_now_ms)"
+    _PG_LAST_MS=0
+    _PG_BAR_TOTAL=0
+    _PG_BAR_UNIT=""
+    printf '\n%d/%d %s\n' "$1" "$2" "$3"
+}
+
+# pg_progress <current> <total|0> <files|bytes|...> [force]
+# Redraws at most every 150 ms unless force is set.
+pg_progress() {
+    _pg_live || return 0
+    local cur=$1 total=$2 unit=$3 force="${4:-}" now elapsed_ms line rate eta
+    _PG_BAR_TOTAL=$total
+    _PG_BAR_CUR=$cur
+    _PG_BAR_UNIT=$unit
+    now="$(_pg_now_ms)"
+    (( _PG_T0 > 0 )) || _PG_T0=$now
+    if [[ -z "$force" ]] && (( now - _PG_LAST_MS < 150 )) && (( total == 0 || cur < total )); then
+        return 0
+    fi
+    _PG_LAST_MS=$now
+    elapsed_ms=$(( now - _PG_T0 ))
+    if [[ "$unit" == "bytes" ]]; then
+        if (( total > 0 )); then
+            line="$(pg_bar_string $(( cur * 100 / total ))) | $(_format_bytes "$cur")/$(_format_bytes "$total")"
+        else
+            line="$(_format_bytes "$cur")"
+        fi
+    elif (( total > 0 )); then
+        line="$(pg_bar_string $(( cur * 100 / total ))) | ${cur}/${total} ${unit}"
+    else
+        line="${cur} ${unit}"
+    fi
+    rate=0
+    (( elapsed_ms >= 1000 && cur > 0 )) && rate=$(( cur * 1000 / elapsed_ms ))
+    if (( rate > 0 )); then
+        if [[ "$unit" == "bytes" ]]; then
+            line+=" | $(_format_bytes "$rate")/s"
+        else
+            line+=" | ${rate} ${unit}/s"
+        fi
+        if (( total > cur && rate > 0 )); then
+            eta=$(( (total - cur) / rate ))
+            line+=" | ~$(_format_eta "$eta")"
+        fi
+    fi
+    printf '\r\033[K%s' "$(_pg_fit "    $line")" >&2
+    _PG_LIVE_LINE=1
+}
+
+# pg_done <n>: when the step drew a bar with a known total, redraw it with
+# the last MEASURED count (live only) and keep it on screen; then print the
+# ✓ line. It never rounds a short or long count up to an invented N/N.
+pg_done() {
+    if (( _PG_BAR_TOTAL > 0 )) && _pg_live; then
+        pg_progress "$_PG_BAR_CUR" "$_PG_BAR_TOTAL" "$_PG_BAR_UNIT" force
+        printf '\n' >&2
+        _PG_LIVE_LINE=0
+    fi
+    _PG_BAR_TOTAL=0
+    _pg_clear_line
+    printf '    ✓ Step %d complete\n' "$1"
+}
+
+pg_fail() {
+    _pg_clear_line
+    err "✗ Step $1 failed: $2"
+}
+
+# pg_run_counted <total|0> <unit> -- <command...>
+# Runs the command; each line it prints on stdout is one unit of progress
+# (with unit "files", lines ending in "/" are directories and do not count —
+# the shape of a tar -v stream). A line "@@aegis-total N" sets the total (a
+# container that measures its own input announces it first) and is not
+# counted. stderr is left alone (errors stay visible).
+# Returns the command's exact status (callers tell failures apart by it, e.g.
+# exit 3 = "destination exists"); the process substitution turns errexit off
+# so a failing command still records its status.
+pg_run_counted() {
+    local total=$1 unit=$2
+    shift 3
+    if ! _pg_live; then
+        "$@" >/dev/null
+        return
+    fi
+    local n=0 line rc=0
+    {
+        while IFS= read -r line; do
+            if [[ "$line" == "@@aegis-total "* ]]; then
+                total="${line#@@aegis-total }"
+                [[ "$total" =~ ^[0-9]+$ ]] || total=0
+                continue
+            fi
+            [[ "$unit" == "files" && "$line" == */ ]] && continue
+            n=$(( n + 1 ))
+            pg_progress "$n" "$total" "$unit"
+        done
+        pg_progress "$n" "$total" "$unit" force
+    } < <(set +e; "$@"; echo "$?" > "${TMPDIR:-/tmp}/.aegis-pg-rc.$$")
+    rc="$(cat "${TMPDIR:-/tmp}/.aegis-pg-rc.$$" 2>/dev/null || echo 1)"
+    rm -f "${TMPDIR:-/tmp}/.aegis-pg-rc.$$"
+    # The bar stays on its line; pg_done redraws it full and ends the line.
+    return "$rc"
+}
+
+# pg_download <url> <out>: curl with a byte bar. The total is the server's
+# Content-Length (HEAD with redirects followed; the last response wins);
+# without one the bar shows the bytes received only. Returns curl's status.
+pg_download() {
+    local url=$1 out=$2
+    if ! _pg_live; then
+        curl -fsSL --output "$out" "$url"
+        return
+    fi
+    local total size=0 pid rc=0
+    total="$(curl -fsSIL "$url" 2>/dev/null | tr -d '\r' \
+        | awk 'tolower($1) == "content-length:" { n = $2 } END { print n + 0 }' || true)"
+    [[ "$total" =~ ^[0-9]+$ ]] || total=0
+    # The rate and ETA are measured from the start of THIS download, not of
+    # the step (a step can do other work first, or download twice).
+    _PG_T0="$(_pg_now_ms)"
+    _PG_LAST_MS=0
+    curl -fsSL --output "$out" "$url" &
+    pid=$!
+    while kill -0 "$pid" 2>/dev/null; do
+        [[ -f "$out" ]] && size="$(wc -c < "$out" | tr -d '[:space:]')"
+        pg_progress "${size:-0}" "${total:-0}" bytes
+        sleep 0.2
+    done
+    wait "$pid" || rc=$?
+    [[ -f "$out" ]] && size="$(wc -c < "$out" | tr -d '[:space:]')"
+    (( rc == 0 )) && pg_progress "${size:-0}" "${total:-0}" bytes force
+    return "$rc"
+}
+
+# pg_watch_start <unit> <counter> [args...] / pg_watch_stop: for work that
+# runs in the foreground but can be measured from the side (a log that grows,
+# containers that become ready). The counter prints "<done> <total>"; it is
+# polled every 0.3 s in a background loop that exits if this shell dies.
+pg_watch_start() {
+    _pg_live || return 0
+    local unit=$1 parent=$$
+    shift
+    (
+        while kill -0 "$parent" 2>/dev/null; do
+            read -r d t <<<"$("$@" 2>/dev/null || echo "0 0")"
+            pg_progress "${d:-0}" "${t:-0}" "$unit" force
+            sleep 0.3
+        done
+    ) &
+    _PG_SPIN_PID=$!
+}
+
+pg_watch_stop() {
+    pg_spin_stop
+}
+
+# _pg_pull_counts <docker pull log>: "<layers done> <layers known>". A layer
+# already on disk counts as known and done; the total grows as docker reads
+# the manifest, so it is what docker has announced so far, never a guess.
+_pg_pull_counts() {
+    local log=$1 known=0 done_=0
+    if [[ -f "$log" ]]; then
+        known="$(grep -cE ': (Pulling fs layer|Already exists)$' "$log" || true)"
+        done_="$(grep -cE ': (Pull complete|Already exists)$' "$log" || true)"
+    fi
+    printf '%s %s\n' "${done_:-0}" "${known:-0}"
+}
+
+# _pg_compose_counts [service...]: "<ready> <total>" for this stack: running
+# and (healthy or without a healthcheck). The total is the services asked
+# for, or every service in the compose file.
+_pg_compose_counts() {
+    local total ready
+    if [[ $# -gt 0 ]]; then
+        total=$#
+    else
+        total="$(compose config --services 2>/dev/null | wc -l | tr -d '[:space:]')"
+    fi
+    ready="$(compose ps --format '{{.State}} {{.Health}}' "$@" 2>/dev/null \
+        | awk '$1 == "running" && ($2 == "" || $2 == "healthy")' | wc -l | tr -d '[:space:]')"
+    printf '%s %s\n' "${ready:-0}" "${total:-0}"
+}
+
+# pg_spin_start <label> / pg_spin_stop: for steps with no measurable signal.
+# The spinner exits by itself if this shell dies.
+pg_spin_start() {
+    _pg_live || return 0
+    local label="$1" parent=$$
+    (
+        frames='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
+        _pg_unicode || frames='|/-\'
+        start=$(date +%s); i=0
+        while kill -0 "$parent" 2>/dev/null; do
+            f="${frames:$(( i % ${#frames} )):1}"
+            printf '\r\033[K%s' "$(_pg_fit "    $f $label $(( $(date +%s) - start ))s")" >&2
+            i=$(( i + 1 ))
+            sleep 0.1
+        done
+    ) &
+    _PG_SPIN_PID=$!
+}
+
+pg_spin_stop() {
+    [[ -n "$_PG_SPIN_PID" ]] || return 0
+    kill "$_PG_SPIN_PID" 2>/dev/null || true
+    wait "$_PG_SPIN_PID" 2>/dev/null || true
+    _PG_SPIN_PID=""
+    printf '\r\033[K' >&2
+}
+# --- progress renderer (end) -------------------------------------------------
 
 # T2: AEGIS_DATA_ROOT must be resolved before anything reads AEGIS_*_DIR.
 derive_data_root || exit 2
@@ -1567,7 +1886,11 @@ cmd_up() {
     # regenerate: "aegis is the only thing that talks to the user."
     local up_log="${BUILD_LOG_DIR%/}/up-$(date -u +%Y%m%dT%H%M%SZ).log"
     mkdir -p "${BUILD_LOG_DIR%/}"
-    if ! compose up -d --wait --no-build >>"$up_log" 2>&1; then
+    local up_rc=0
+    pg_watch_start services _pg_compose_counts
+    compose up -d --wait --no-build >>"$up_log" 2>&1 || up_rc=$?
+    pg_watch_stop
+    if [[ "$up_rc" -ne 0 ]]; then
         err "the container did not come up; last lines:"
         tail -n 20 "$up_log" | sed 's/^/  /' >&2
         exit 1
@@ -1973,7 +2296,8 @@ cmd_promote() {
     local repo_native rc=0
     repo_native="$(_to_native_path "$repo_abs")"
     log "promoting ${repo_abs} -> /workspace/${rel} (throwaway container, --network none)."
-    MSYS_NO_PATHCONV=1 docker run --rm --network none \
+    pg_step 1 2 "Copying into the workstation"
+    pg_run_counted 0 items -- env MSYS_NO_PATHCONV=1 docker run --rm --network none \
         -e DEST="/data${sub:+/$sub}" -e FORCE="$force" -e REL="/workspace/$rel" \
         -v "${repo_native}:/promote-src:ro" \
         -v "$(data_mount_src "$vol"):/data" \
@@ -1990,7 +2314,8 @@ cmd_promote() {
                 rm -rf "$DEST"
             fi
             mkdir -p "$DEST"
-            cp -a /promote-src/. "$DEST/"
+            echo "@@aegis-total $(find /promote-src -mindepth 1 | wc -l)"
+            cp -av /promote-src/. "$DEST/"
             chown -R 1000:1000 "$(dirname "$DEST")"
         ' || rc=$?
     if [[ "$rc" -eq 3 ]]; then
@@ -2003,9 +2328,11 @@ cmd_promote() {
         exit 1
     fi
     check_no_symlink_escape "$vol" "$sub"
+    pg_done 1
 
     # Copy verified: now, and only now, destroy.
     log "copy complete — tearing the sandbox down (${SANDBOX_PROJECT})."
+    pg_step 2 2 "Removing the sandbox"
     if ! sandbox_compose down -v; then
         err "the code is now at /workspace/${rel}, but tearing the sandbox down failed."
         err "remove it by hand: docker compose -p ${SANDBOX_PROJECT} -f ${SANDBOX_COMPOSE_FILE} down -v"
@@ -2015,6 +2342,7 @@ cmd_promote() {
         rm -rf "$state_dir"
         log "sandbox state removed: $state_dir"
     fi
+    pg_done 2
     log "promoted: ${repo_abs} -> /workspace/${rel}. The sandbox is gone."
 }
 
@@ -2678,7 +3006,11 @@ _allow_apply_extra_hosts() {
     cmd_allow_regenerate_extra_hosts || return 0
     is_up || return 0
     log "recreando el contenedor de Aegis para que la nueva regla de dominio resuelva adentro — esto corta tu sesión activa (reabrila al terminar; tus archivos no se pierden, es el mismo volumen)."
-    if compose up -d --wait --no-build dev >"${BUILD_LOG_DIR%/}/extra-hosts-$(date -u +%Y%m%dT%H%M%SZ).log" 2>&1; then
+    local recreate_rc=0
+    pg_watch_start services _pg_compose_counts dev
+    compose up -d --wait --no-build dev >"${BUILD_LOG_DIR%/}/extra-hosts-$(date -u +%Y%m%dT%H%M%SZ).log" 2>&1 || recreate_rc=$?
+    pg_watch_stop
+    if [[ "$recreate_rc" -eq 0 ]]; then
         log "contenedor recreado."
     else
         err "WARNING: no se pudo recrear el contenedor — el dominio no va a resolver hasta 'aegis up'."
@@ -3544,6 +3876,7 @@ _verify_local_image() {
     # verifier as root: it mounts the read-only config, has no Docker socket,
     # and the token is short-lived and scoped to the registry. The alternative
     # (world-readable config) would leak the token to other local users.
+    pg_spin_start "verifying the image signature"
     _run_with_throwaway_config "$config" env MSYS_NO_PATHCONV=1 docker run --rm \
         --user 0:0 \
         --volume "${config_native}:/cosign-config:ro" \
@@ -3552,6 +3885,7 @@ _verify_local_image() {
             --certificate-oidc-issuer "$AEGIS_IMAGE_OIDC_ISSUER" \
             --certificate-identity-regexp "$AEGIS_IMAGE_IDENTITY_REGEXP" \
             "${ref}" >"$out" 2>&1 || rc=$?
+    pg_spin_stop
 
     if [[ "$rc" -ne 0 ]]; then
         err "the signature did NOT verify: this image was not signed by a run of"
@@ -3659,7 +3993,9 @@ cmd_image_pull() {
     mkdir -p "${BUILD_LOG_DIR%/}"
     local started
     started="$(date +%s)"
+    pg_watch_start layers _pg_pull_counts "$pull_log"
     _run_with_throwaway_config "$config" env "DOCKER_CONFIG=$config_native" docker pull "$reference" >"$pull_log" 2>&1 || rc=$?
+    pg_watch_stop
     if [[ "$rc" -eq 0 ]]; then
         log "image downloaded ($(( $(date +%s) - started ))s)"
     else
@@ -5679,7 +6015,7 @@ _client_fetch_install_bundle() {
     local tmp archive actual
     tmp="$(mktemp -d)" || { err "mktemp failed"; return 1; }
     archive="${tmp}/bundle.tar.gz"
-    if ! curl -fsSL "$url" -o "$archive"; then
+    if ! pg_download "$url" "$archive"; then
         err "could not download the bundle: ${url}"
         rm -rf "$tmp"
         return 1
@@ -6247,6 +6583,8 @@ cmd_backup() {
     local -a rest=()
     local _r
     for _r in "${ids[@]}"; do [[ "$_r" == "code" ]] || rest+=("$_r"); done
+    pg_step 1 4 "Counting files"
+    pg_spin_start "scanning ${ids[*]}"
     counts="$(MSYS_NO_PATHCONV=1 docker run --rm --network none \
         "${mnts[@]}" \
         "$BACKUP_IMAGE" sh -c "${BACKUP_PRUNE_SH}"'
@@ -6266,10 +6604,21 @@ cmd_backup() {
             done
             wc -l < /tmp/aegis-skip
         ' sh "$mode" "${rest[@]}")"
+    pg_spin_stop
+    pg_done 1
+
+    # The bar total is the file count just measured; tar -v prints one line
+    # per archived entry (directories end in "/" and are not counted).
+    local total_files=0 _c _k
+    for (( _k = 1; _k <= ${#ids[@]}; _k++ )); do
+        _c="$(sed -n "${_k}p" <<<"$counts" | tr -d '[:space:]')"
+        total_files=$(( total_files + ${_c:-0} ))
+    done
+    pg_step 2 4 "Archiving"
 
     # tar -X reads fnmatch patterns, so glob characters in a skipped path are
     # escaped to match only that literal directory.
-    MSYS_NO_PATHCONV=1 docker run --rm --network none \
+    pg_run_counted "$total_files" files -- env MSYS_NO_PATHCONV=1 docker run --rm --network none \
         "${mnts[@]}" \
         -v "${dest}:/backup" \
         "$BACKUP_IMAGE" sh -c "${BACKUP_PRUNE_SH}"'
@@ -6278,14 +6627,20 @@ cmd_backup() {
             if [ "$mode" != full ]; then
                 aegis_bk_prune_list /m | sed "s/[][*?\\]/\\\\&/g" > /tmp/aegis-skip
             fi
-            exec tar czf "$out" -X /tmp/aegis-skip "$@"
+            exec tar czvf "$out" -X /tmp/aegis-skip "$@"
         ' sh "/backup/${archive_name}" "$mode" \
         -C /m "${excludes[@]}" "${ids[@]}"
+    pg_done 2
 
     local archive_path="${dest%/}/${archive_name}"
     local sha256 size_bytes
+    pg_step 3 4 "Hashing the archive"
+    pg_spin_start "sha256"
     sha256="$(sha256_file "$archive_path")"
     size_bytes="$(wc -c < "$archive_path" | tr -d '[:space:]')"
+    pg_spin_stop
+    pg_done 3
+    pg_step 4 4 "Writing the manifest"
 
     # Built directly with printf, not node -e (every value here is either
     # generated by this script itself or a fixed literal — never
@@ -6314,7 +6669,9 @@ cmd_backup() {
 
     printf '%s\n' "$ts" > "${dest%/}/.last-backup"
     printf '%s\n' "$archive_name" >> "${dest%/}/.last-backup"
+    pg_done 4
 
+    echo
     log "archive: $archive_path"
     log "size: ${size_bytes} bytes"
     log "sha256: $sha256"
@@ -6409,7 +6766,9 @@ cmd_volume_migrate_to_vault() {
     fi
 
     local id src dst before after
+    local step_n=0
     for id in "${ids[@]}"; do
+        step_n=$(( step_n + 1 ))
         case "$id" in
             home|claude|opencode|gentle-ai|herdr) ;;
             code|engram)
@@ -6437,9 +6796,11 @@ cmd_volume_migrate_to_vault() {
             exit 1
         fi
         log "$id: copying ${before} file(s) from ${src} -> ${dst}"
-        MSYS_NO_PATHCONV=1 docker run --rm --network none \
+        pg_step "$step_n" "${#ids[@]}" "Migrating $id"
+        pg_run_counted 0 items -- env MSYS_NO_PATHCONV=1 docker run --rm --network none \
             -v "${src}:/src:ro" -v "${dst}:/dst" "$BACKUP_IMAGE" \
-            sh -c 'cp -a /src/. /dst/ && true' || { err "$id: copy failed"; exit 1; }
+            sh -c 'echo "@@aegis-total $(find /src -mindepth 1 | wc -l)"; cp -av /src/. /dst/' || { err "$id: copy failed"; exit 1; }
+        pg_done "$step_n"
         after="$(find "$dst" -type f 2>/dev/null | wc -l | tr -d '[:space:]')"
         if [[ "${after:-0}" -lt "${before:-0}" ]]; then
             err "$id: copied ${after:-0} file(s) but the source had ${before} — do NOT cut over yet."
@@ -6490,15 +6851,22 @@ cmd_restore() {
     # cmd_backup). Missing manifest is a NOTE, not a refusal (a user-supplied
     # archive from elsewhere may not have one).
     local manifest="${archive%.tar.gz}.manifest.json"
+    local n_steps=1 step=1
+    [[ -f "$manifest" ]] && n_steps=2
     if [[ -f "$manifest" ]]; then
         local expected actual
+        pg_step "$step" "$n_steps" "Verifying the checksum"
+        step=$(( step + 1 ))
         expected="$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).sha256)' "$manifest" 2>/dev/null || true)"
+        pg_spin_start "sha256"
         actual="$(sha256_file "$archive")"
+        pg_spin_stop
         if [[ -n "$expected" && "$expected" != "$actual" ]]; then
             err "sha256 mismatch: manifest says $expected, archive is $actual — refusing to restore a possibly corrupted/tampered archive."
             exit 1
         fi
         log "sha256 verified against manifest: $manifest"
+        pg_done 1
     else
         log "no manifest found next to archive ($manifest) — skipping sha256 verification."
     fi
@@ -6555,8 +6923,21 @@ cmd_restore() {
     # The archive basename travels as an env value, never interpolated into
     # the script: a filename is user input and may contain quotes or shell
     # metacharacters.
+    # Bar total: the file counts the backup recorded for these members (0 when
+    # there is no manifest: the bar then shows the count without a percent).
+    local total_files=0
+    if [[ -f "$manifest" ]]; then
+        total_files="$(node -e '
+            const m = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+            const c = m.file_counts || {};
+            let t = 0;
+            for (const k of process.argv.slice(2)) t += Number(c[k]) || 0;
+            console.log(t);
+        ' "$manifest" "${members[@]}" 2>/dev/null || echo 0)"
+    fi
+    pg_step "$step" "$n_steps" "Restoring [${members[*]}]"
     local tar_status=0
-    MSYS_NO_PATHCONV=1 docker run --rm --network none \
+    pg_run_counted "${total_files:-0}" files -- env MSYS_NO_PATHCONV=1 docker run --rm --network none \
         "${mounts[@]}" \
         -v "${archive_dir}:/restore-src:ro" \
         -e AEGIS_RESTORE_ROOT=/data \
@@ -6566,10 +6947,12 @@ cmd_restore() {
         "$BACKUP_IMAGE" sh -c "$RESTORE_SH" || tar_status=$?
 
     if [[ "$tar_status" -ne 0 ]]; then
+        pg_fail "$step" "exit ${tar_status}"
         err "restore failed (${restore_mode} mode, exit ${tar_status}) — see the output above. Files already written stay in place; nothing was deleted."
         exit 1
     fi
 
+    pg_done "$step"
     log "restore complete: [${members[*]}]."
 }
 
@@ -6605,18 +6988,23 @@ cmd_export() {
         err "remove it (or pick another --dest) and run the export again."
         exit 1
     fi
+    pg_step 1 2 "Checking symlinks"
     check_no_symlink_escape "$vol" "$sub"
+    pg_done 1
     host_mkdir_p "$dest"
 
     log "exporting /workspace/$rel -> ${dest%/}/${base} (throwaway container, read-only source, --network none)."
-    MSYS_NO_PATHCONV=1 docker run --rm --network none \
+    pg_step 2 2 "Copying out"
+    pg_run_counted 0 items -- env MSYS_NO_PATHCONV=1 docker run --rm --network none \
         -e SRC="/data${sub:+/$sub}" -e DST_BASE="$base" \
         -v "$(data_mount_src "$vol"):/data:ro" \
         -v "${dest}:/export" \
         "$BACKUP_IMAGE" sh -c '
             [ -e "$SRC" ] || { echo "aegis: nothing at that path" >&2; exit 1; }
-            cp -a "$SRC" "/export/$DST_BASE"
+            echo "@@aegis-total $(find "$SRC" | wc -l)"
+            cp -av "$SRC" "/export/$DST_BASE"
         '
+    pg_done 2
     log "exported to: ${dest%/}/${base}"
 }
 
@@ -6662,7 +7050,8 @@ cmd_import() {
     # (this throwaway container is a plain docker run, so it does have the
     # capabilities needed to remove the previous copy).
     local rc=0
-    MSYS_NO_PATHCONV=1 docker run --rm --network none \
+    pg_step 1 2 "Copying in"
+    pg_run_counted 0 items -- env MSYS_NO_PATHCONV=1 docker run --rm --network none \
         -e DEST="/data${sub:+/$sub}" -e SRC_BASE="$host_base" -e REPLACE="$replace" \
         -e REL="/workspace/$rel" \
         -v "$(data_mount_src "$vol"):/data" \
@@ -6684,7 +7073,8 @@ cmd_import() {
                 rm -rf "$DEST"
             fi
             mkdir -p "$parent"
-            cp -a "/import-src/$SRC_BASE" "$DEST"
+            echo "@@aegis-total $(find "/import-src/$SRC_BASE" | wc -l)"
+            cp -av "/import-src/$SRC_BASE" "$DEST"
             # chown the PARENT tree, not just $DEST: mkdir -p above runs as
             # root (this throwaway container has no non-root user), so any
             # newly created intermediate directory would otherwise stay
@@ -6700,7 +7090,10 @@ cmd_import() {
         err "import failed (container exit $rc)."
         exit 1
     fi
+    pg_done 1
+    pg_step 2 2 "Checking symlinks"
     check_no_symlink_escape "$vol" "$sub"
+    pg_done 2
     log "imported to: /workspace/$rel"
 }
 
@@ -6862,7 +7255,11 @@ cmd_build_clean() {
         log "no ${BUILD_WINDOWS_IMAGE_REPO} image to remove."
         return 0
     fi
-    docker image rm "${images[@]}" >/dev/null
+    local rm_rc=0
+    pg_spin_start "removing ${#images[@]} image(s)"
+    docker image rm "${images[@]}" >/dev/null || rm_rc=$?
+    pg_spin_stop
+    [[ "$rm_rc" -eq 0 ]] || exit "$rm_rc"
     log "removed: ${images[*]}"
 }
 
@@ -6953,7 +7350,11 @@ env_rebuild_and_apply() {
     # --no-build: the image was just built (or pulled and verified) under exactly
     # this name; compose must start that one or fail, never build a second copy.
     local stack_log="${logdir}/stack-$(date -u +%Y%m%dT%H%M%SZ).log"
-    if ! compose up -d --wait --no-build dev >>"$stack_log" 2>&1; then
+    local stack_rc=0
+    pg_watch_start services _pg_compose_counts dev
+    compose up -d --wait --no-build dev >>"$stack_log" 2>&1 || stack_rc=$?
+    pg_watch_stop
+    if [[ "$stack_rc" -ne 0 ]]; then
         err "the container did not come up; last lines:"
         tail -n 20 "$stack_log" | sed 's/^/  /' >&2
         exit 1
@@ -7976,89 +8377,10 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# Update UX: progress bars and step tracking
+# Update UX: optional log file and recovery hints (the steps and bars use
+# the shared progress renderer near the top of this file)
 # ---------------------------------------------------------------------------
 
-_update_step_start() {
-    local step_num="$1" step_name="$2"
-    printf '\n%d/4 %s\n' "$step_num" "$step_name"
-}
-
-_update_step_progress() {
-    local pct="$1"
-    local filled=$((pct / 5))
-    local empty=$((20 - filled))
-
-    # Use ASCII fallback on limited terminals (Windows PowerShell, basic shells)
-    local use_unicode=1
-    if [[ -n "$TERM" && "$TERM" == "dumb" ]] || [[ "${OSTYPE}" == "msys" ]]; then
-        use_unicode=0
-    fi
-
-    # Detect terminal capabilities - try to write Unicode and see if it works
-    if [[ "$use_unicode" == "1" ]]; then
-        # Try a test write; if it fails, fall back to ASCII
-        if ! (echo -ne "█" >/dev/null 2>&1); then
-            use_unicode=0
-        fi
-    fi
-
-    printf '    ['
-    if [[ "$use_unicode" == "1" ]]; then
-        # Unicode: solid block (█) and light shade (░)
-        printf '%*s' "$filled" | tr ' ' '█'
-        printf '%*s' "$empty" | tr ' ' '░'
-    else
-        # ASCII fallback: equals (=) and dash (-)
-        printf '%*s' "$filled" | tr ' ' '='
-        printf '%*s' "$empty" | tr ' ' '-'
-    fi
-    printf '] %3d%%\n' "$pct"
-}
-
-_update_step_complete() {
-    local step_num="$1"
-    printf '    ✓ Step %d complete\n' "$step_num"
-}
-
-# Spinner for indeterminate operations
-_update_spinner() {
-    local -a frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
-    local idx=0
-    while [[ -d "/proc/$1" ]]; do
-        printf '\r    %s' "${frames[$((idx++ % ${#frames[@]}))]}"
-        sleep 0.1
-    done
-    printf '\r'
-}
-
-# Format bytes to human readable (e.g., 1.2 MB, 45 KB)
-_format_bytes() {
-    local bytes=$1
-    if (( bytes < 1024 )); then
-        printf '%d B' "$bytes"
-    elif (( bytes < 1024 * 1024 )); then
-        printf '%.1f KB' "$(( bytes / 1024 ))"
-    elif (( bytes < 1024 * 1024 * 1024 )); then
-        printf '%.1f MB' "$(( bytes / (1024 * 1024) ))"
-    else
-        printf '%.1f GB' "$(( bytes / (1024 * 1024 * 1024) ))"
-    fi
-}
-
-# Calculate and format ETA (seconds remaining)
-_format_eta() {
-    local seconds=$1
-    if (( seconds < 60 )); then
-        printf '%ds' "$seconds"
-    elif (( seconds < 3600 )); then
-        printf '%dm %ds' "$((seconds / 60))" "$((seconds % 60))"
-    else
-        printf '%dh %dm' "$((seconds / 3600))" "$(( (seconds % 3600) / 60 ))"
-    fi
-}
-
-_UPDATE_STEP_START_TIME=0
 _UPDATE_LOG_FILE=""
 _UPDATE_VERBOSE=0
 
@@ -8097,36 +8419,6 @@ _update_error_with_recovery() {
     echo
 }
 
-_update_step_with_eta() {
-    local step_num="$1" step_name="$2" pct="$3" speed="${4:-}"
-    if [[ "$pct" == "START" ]]; then
-        _UPDATE_STEP_START_TIME=$(date +%s 2>/dev/null || echo 0)
-        _update_step_start "$step_num" "$step_name"
-        return
-    fi
-
-    if [[ -z "$speed" ]]; then
-        _update_step_progress "$pct"
-        return
-    fi
-
-    local now=$(date +%s 2>/dev/null || echo 0)
-    local elapsed=$((now - _UPDATE_STEP_START_TIME))
-    [[ "$elapsed" -lt 1 ]] && elapsed=1
-
-    if [[ "$pct" -gt 0 && "$pct" -lt 100 ]]; then
-        local remaining=$(( (100 - pct) * elapsed / pct ))
-        local eta=$(_format_eta "$remaining")
-        local filled=$((pct / 5))
-        local empty=$((20 - filled))
-        printf '    ['
-        printf '%*s' "$filled" | tr ' ' '━'
-        printf '%*s' "$empty" | tr ' ' '░'
-        printf '] %3d%% | %s | ~%s\n' "$pct" "$speed" "$eta"
-    else
-        _update_step_progress "$pct"
-    fi
-}
 
 # ---------------------------------------------------------------------------
 # client-license-surface S3: `aegis update` moves to the latest SIGNED bundle
@@ -8203,12 +8495,12 @@ _fetch_cli_release() {
     fi
 
     local base_url="https://github.com/${AEGIS_CLI_REPO}/releases/download/${tag}"
-    if ! curl -fsSL --output "$tarball" "${base_url}/aegis-cli.tar.gz"; then
+    if ! pg_download "${base_url}/aegis-cli.tar.gz" "$tarball"; then
         err "could not download aegis-cli ${tag}"
         rm -rf "$staging"
         return 1
     fi
-    if ! curl -fsSL --output "$bundle" "${base_url}/aegis-cli.tar.gz.cosign.bundle"; then
+    if ! pg_download "${base_url}/aegis-cli.tar.gz.cosign.bundle" "$bundle"; then
         err "could not download the aegis-cli ${tag} signature bundle"
         rm -rf "$staging"
         return 1
@@ -8413,7 +8705,7 @@ cmd_update_client() {
     [[ -n "$AEGIS_IMAGE_TAG_EXPLICIT" ]] || child_env+=(-u AEGIS_IMAGE_TAG)
 
     if [[ "$stage" != "2" || -z "${AEGIS_UPDATE_HANDOFF:-}" ]]; then
-        _update_step_start 1 "Installing signed configuration bundle"
+        pg_step 1 4 "Installing signed configuration bundle"
         _update_log "INFO" "Installing bundle from $(tildify "${AEGIS_INSTALL_SOURCE:-registry}")"
         if ! ( cmd_install ); then
             # Nothing was replaced: a state file this run created would make the
@@ -8424,10 +8716,9 @@ cmd_update_client() {
             exit 1
         fi
         _update_log "INFO" "Bundle installed successfully"
-        _update_step_progress 100
-        _update_step_complete 1
+        pg_done 1
 
-        _update_step_start 2 "Updating CLI"
+        pg_step 2 4 "Updating CLI"
         _update_log "INFO" "Updating CLI from $(tildify "$bin_dir")"
         if ! _client_install_launcher; then
             _update_log "ERROR" "CLI installation failed"
@@ -8435,8 +8726,7 @@ cmd_update_client() {
             exit 1
         fi
         _update_log "INFO" "CLI updated successfully"
-        _update_step_progress 100
-        _update_step_complete 2
+        pg_done 2
 
         # Steps 3/4 belong to the NEW version's code (an older CLI does not even
         # know the image sweep exists), but they were still running inside THIS
@@ -8455,7 +8745,9 @@ cmd_update_client() {
         exec env "${child_env[@]}" AEGIS_UPDATE_HANDOFF=1 bash "${bin_dir}/aegis" update
     fi
 
-    _update_step_with_eta 3 "Starting new version (download + verify; rebuilding image if needed)" START
+    # Step 3 is the new CLI's own `aegis up`: it prints its own phases and
+    # measured progress (image pull, build steps), so nothing is drawn here.
+    pg_step 3 4 "Starting new version (download + verify; rebuilding image if needed)"
     _update_log "INFO" "Pulling base image: ${AEGIS_IMAGE_REGISTRY}/${AEGIS_IMAGE_REPO}:${new_tag:-<auto>}"
     # Every developer image that exists right now was built by the OLD version —
     # the rebuild `up` is about to do does not count. Captured HERE, not before
@@ -8463,7 +8755,6 @@ cmd_update_client() {
     # anything) still gets the full set: nothing has been removed yet.
     old_env_ids="$(docker images --format '{{.ID}}' "$AEGIS_ENV_IMAGE_REPO" | tr '\n' ' ')"
     _update_log "INFO" "Found $( echo $old_env_ids | wc -w ) previous developer images"
-    _update_step_with_eta 3 "Starting new version (download + verify; rebuilding image if needed)" 45 "3.2 MB/s"
     if ! env "${child_env[@]}" bash "${bin_dir}/aegis" up; then
         _update_log "ERROR" "Failed to start new version"
         err "the new version did not start — the previous images are kept, so nothing was removed."
@@ -8472,10 +8763,9 @@ cmd_update_client() {
         exit 1
     fi
     _update_log "INFO" "New version started successfully"
-    _update_step_progress 100
-    _update_step_complete 3
+    pg_done 3
 
-    _update_step_start 4 "Removing previous images"
+    pg_step 4 4 "Removing previous images"
     new_version="$(_product_version || echo unknown)"
     if [[ -n "$AEGIS_IMAGE_TAG_EXPLICIT" ]]; then
         new_tag="$AEGIS_IMAGE_TAG"
@@ -8484,33 +8774,41 @@ cmd_update_client() {
     fi
     new_base_id="$(_image_id "${AEGIS_IMAGE_REGISTRY}/${AEGIS_IMAGE_REPO}:${new_tag}")"
     new_dev="$(_env_file_value "$env_file" AEGIS_DEV_IMAGE)"
-    # The previous developer image goes only when it IS one and it changed.
+    # The list is built first so the bar counts real removals against a known
+    # total. The previous developer image goes only when it IS one and it
+    # changed.
     local id
+    local -a to_remove=()
     if [[ "$old_dev" == "${AEGIS_ENV_IMAGE_REPO}:"* && "$old_dev" != "$new_dev" ]]; then
         old_dev_id="$(_image_id "$old_dev")"
-        _remove_old_image "$old_dev"
+        to_remove+=("$old_dev")
     fi
     new_dev_id="$(_image_id "$new_dev")"
     # ...and so does every OTHER developer image captured before the start:
     # each was built on the old base and holds its layers hostage on disk. The
     # image the NEW container runs (which can coincide with an old id when the
-    # rebuild is byte-identical) and the one already removed by ref are spared.
+    # rebuild is byte-identical) and the one already listed by ref are spared.
     for id in ${old_env_ids}; do
         [[ -n "$id" && "$id" != "$new_dev_id" && "$id" != "$old_dev_id" ]] || continue
         docker image inspect "$id" >/dev/null 2>&1 || continue
-        _remove_old_image "$id"
+        to_remove+=("$id")
     done
     # The previous base: by its tag when the version moved, by its id when the
     # same tag was re-published under a new digest.
     if [[ -n "$old_base_id" ]]; then
         if [[ "$old_tag" != "$new_tag" ]]; then
-            _remove_old_image "$old_base_ref"
+            to_remove+=("$old_base_ref")
         elif [[ "$old_base_id" != "$new_base_id" ]]; then
-            _remove_old_image "$old_base_id"
+            to_remove+=("$old_base_id")
         fi
     fi
-    _update_step_progress 100
-    _update_step_complete 4
+    local removed=0
+    for id in "${to_remove[@]}"; do
+        _remove_old_image "$id"
+        removed=$(( removed + 1 ))
+        pg_progress "$removed" "${#to_remove[@]}" images force
+    done
+    pg_done 4
     _update_log "INFO" "Cleanup completed, removing state file"
     rm -f "$state"
 
