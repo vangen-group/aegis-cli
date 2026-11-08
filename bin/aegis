@@ -9375,6 +9375,111 @@ _TELEMETRY_FIRST=""
 _TELEMETRY_SECOND=""
 _TELEMETRY_START_NS=""
 
+# ---------------------------------------------------------------------------
+# Structured log (S1/S4): one JSON line per command run, appended to
+# ~/.aegis/logs/aegis.log.
+#
+# Three invariants:
+#   1. It never writes to stdout or stderr. Those are the human interface, and a
+#      machine line mixed into them breaks every pipe and every test that reads
+#      the launcher's output.
+#   2. It never fails a command. A launcher that cannot log must still run, so
+#      every step is best-effort and the exit status is never touched (S13).
+#   3. It carries ids, not content. trace_id and request_id are random hex; the
+#      command is the first word only when it looks like a command name. A path
+#      or an argument typed after it is never held, let alone written.
+#
+# Off switch: AEGIS_LOG=off. Path override: AEGIS_LOG_FILE. The file is rotated
+# once past 1 MB, keeping a single .1, so an install cannot grow without bound.
+# ---------------------------------------------------------------------------
+
+_AEGIS_TRACE_ID=""
+_AEGIS_SPAN_ID=""
+_AEGIS_REQUEST_ID=""
+
+_obs_hex() {
+    local bytes="$1" out=""
+    if [[ -r /dev/urandom ]]; then
+        out="$(od -An -tx1 -N "$bytes" /dev/urandom 2>/dev/null | tr -d ' \n')"
+    fi
+    if [[ ! "$out" =~ ^[0-9a-f]+$ ]] || [[ "${#out}" -ne $((bytes * 2)) ]]; then
+        # Fallback with the same shape: pid and time are enough to correlate one
+        # machine's runs when /dev/urandom is unreachable (Git Bash on Windows).
+        out="$(printf '%08x%08x' "$$" "$(date +%s)" | cut -c1-$((bytes * 2)))"
+    fi
+    printf '%s' "${out:0:$((bytes * 2))}"
+}
+
+# A token that may be written to the log: a command word, never a path, never an
+# argument. Anything else is reported as "other".
+_obs_word() {
+    local value="$1"
+    if [[ "$value" =~ ^[a-z][a-z0-9-]{0,24}$ ]]; then
+        printf '%s' "$value"
+    else
+        printf 'other'
+    fi
+}
+
+# XDG state, not ~/.aegis: that directory is the launcher's own state and its
+# creation is asserted by the licence suite (a fresh install must not have it
+# yet). Logs are not state the launcher owns — they belong in the standard place.
+_obs_log_file() {
+    local base="${XDG_STATE_HOME:-$HOME/.local/state}"
+    printf '%s' "${AEGIS_LOG_FILE:-$base/aegis/aegis.log}"
+}
+
+_obs_log() {
+    local event="$1" level="$2" rc="$3" ms="$4"
+    [[ "${AEGIS_LOG:-}" == off ]] && return 0
+
+    local file dir size
+    file="$(_obs_log_file)"
+    dir="${file%/*}"
+    mkdir -p "$dir" 2>/dev/null || return 0
+
+    if [[ -f "$file" ]]; then
+        size="$(wc -c < "$file" 2>/dev/null | tr -d ' ')"
+        if [[ "$size" =~ ^[0-9]+$ ]] && [[ "$size" -gt 1048576 ]]; then
+            mv -f "$file" "$file.1" 2>/dev/null || true
+        fi
+    fi
+
+    # printf, not a JSON library: every value below is bounded by construction
+    # (hex ids, digits, a word matching _obs_word), so no escaping is needed and
+    # the launcher does not gain a dependency or a node start per command.
+    printf '{"timestamp":"%s","level":"%s","service.name":"aegis-cli","event":"%s","command":"%s","subcommand":"%s","trace_id":"%s","span_id":"%s","request_id":"%s","exit_code":%s,"duration_ms":%s,"pid":%s,"version":"%s"}\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        "$level" \
+        "$event" \
+        "$(_obs_word "${_TELEMETRY_FIRST:-}")" \
+        "$(_obs_word "${_TELEMETRY_SECOND:-}")" \
+        "$_AEGIS_TRACE_ID" \
+        "$_AEGIS_SPAN_ID" \
+        "$_AEGIS_REQUEST_ID" \
+        "${rc:-0}" \
+        "${ms:-0}" \
+        "$$" \
+        "$(printf '%s' "${AEGIS_VERSION:-unknown}" | tr -cd '0-9A-Za-z._-')" \
+        >> "$file" 2>/dev/null || true
+    return 0
+}
+
+_obs_command_finished() {
+    local rc="$1" end_ns ms=0
+    end_ns="$(_telemetry_now_ns)"
+    if [[ -n "${_TELEMETRY_START_NS:-}" && -n "$end_ns" ]]; then
+        ms=$(( (end_ns - _TELEMETRY_START_NS) / 1000000 ))
+    fi
+    # A failed command is logged at WARN: the level has to mean something.
+    if [[ "${rc:-0}" -eq 0 ]]; then
+        _obs_log "command.finished" "INFO" "$rc" "$ms"
+    else
+        _obs_log "command.finished" "WARN" "$rc" "$ms"
+    fi
+}
+
+
 _telemetry_now_ns() {
     local n
     n="$(date +%s%N 2>/dev/null || true)"
@@ -9419,6 +9524,10 @@ _telemetry_on_exit() {
     if [[ -n "${AEGIS_INSTALL_TMP:-}" && -d "${AEGIS_INSTALL_TMP:-}" ]]; then
         rm -rf "$AEGIS_INSTALL_TMP"
     fi
+    # The structured log runs whether or not telemetry is enabled: it is local,
+    # it is what an operator reads when a command misbehaves, and it is the reason
+    # opt-in telemetry is not the only trace of a run (S1).
+    _obs_command_finished "$rc" 2>/dev/null || true
     _telemetry_emit "$rc" 2>/dev/null || true
     return 0
 }
@@ -9432,6 +9541,16 @@ case "$_TELEMETRY_FIRST" in
     env|secret|allow|add|remove|build) _TELEMETRY_SECOND="${2:-}" ;;
 esac
 _TELEMETRY_START_NS="$(_telemetry_now_ns)"
+
+# One trace per command run: the local log line and the OTLP span the telemetry
+# sender emits carry the same ids, so the two can be joined in Tempo and Loki.
+# Exported, because aegis-telemetry.js reads them when it builds its payload.
+_AEGIS_TRACE_ID="$(_obs_hex 16)"
+_AEGIS_SPAN_ID="$(_obs_hex 8)"
+_AEGIS_REQUEST_ID="$(_obs_hex 8)"
+export AEGIS_TRACE_ID="$_AEGIS_TRACE_ID"
+export AEGIS_SPAN_ID="$_AEGIS_SPAN_ID"
+export AEGIS_REQUEST_ID="$_AEGIS_REQUEST_ID"
 trap '_telemetry_on_exit' EXIT
 
 main "$@"

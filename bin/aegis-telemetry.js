@@ -150,7 +150,7 @@ function buildPayload(o) {
             },
         });
     }
-    return {
+    const payload = {
         resourceMetrics: [{
             resource: {
                 attributes: [
@@ -161,6 +161,65 @@ function buildPayload(o) {
                 ],
             },
             scopeMetrics: [{ scope: { name: 'aegis-cli' }, metrics }],
+        }],
+    };
+
+    // Metrics and the span travel in the same OTLP request: one round trip, and
+    // the collector receives both halves of the same run.
+    const span = buildSpan(o, t);
+    if (span) Object.assign(payload, span);
+
+    return payload;
+}
+
+// The one span this CLI emits: the command run itself. It exists so the ids in
+// the local JSON log can be joined to a remote trace; the metric payload above
+// deliberately carries no per-run id, because a trace id as a metric label is the
+// cardinality explosion that makes a metrics backend fall over (S7). Per-run
+// detail belongs in traces and logs.
+const TRACE_ID_RE = /^[0-9a-f]{32}$/;
+const SPAN_ID_RE = /^[0-9a-f]{16}$/;
+
+function buildSpan(o, times) {
+    const traceId = String(o.traceId || '');
+    const spanId = String(o.spanId || '');
+    if (!TRACE_ID_RE.test(traceId) || !SPAN_ID_RE.test(spanId)) return null;
+
+    const exitCode = Number.isInteger(o.exitCode) ? o.exitCode : 1;
+    const command = vocabulary().includes(o.command) ? o.command : 'other';
+    const attributes = [
+        str('aegis.command', command),
+        str('aegis.outcome', exitCode === 0 ? 'ok' : 'error'),
+        { key: 'aegis.exit_code', value: { intValue: String(exitCode) } },
+    ];
+    const requestId = String(o.requestId || '');
+    if (SPAN_ID_RE.test(requestId)) attributes.push(str('aegis.request_id', requestId));
+
+    return {
+        resourceSpans: [{
+            resource: {
+                attributes: [
+                    str('service.name', 'aegis-cli'),
+                    str('service.version', o.version || 'unknown'),
+                    str('os.type', o.osType || osType()),
+                    str('host.id', o.hostId || ''),
+                ],
+            },
+            scopeSpans: [{
+                scope: { name: 'aegis-cli' },
+                spans: [{
+                    traceId,
+                    spanId,
+                    name: 'aegis.command',
+                    kind: 1,
+                    startTimeUnixNano: times.startTimeUnixNano,
+                    endTimeUnixNano: times.timeUnixNano,
+                    // A failed command is a failed span: an operator filtering by
+                    // status should not have to read attributes to find it.
+                    status: { code: exitCode === 0 ? 1 : 2 },
+                    attributes,
+                }],
+            }],
         }],
     };
 }
@@ -236,6 +295,11 @@ async function send(o) {
             version: launcherVersion(o.workstationDir),
             hostId: cfg.hostId,
             languages: readLanguages(),
+            // Set by the launcher, and the reason the log line and this span can
+            // be joined. Absent (older launcher, direct invocation) means no span.
+            traceId: process.env.AEGIS_TRACE_ID,
+            spanId: process.env.AEGIS_SPAN_ID,
+            requestId: process.env.AEGIS_REQUEST_ID,
         }));
         const ctl = new AbortController();
         const timer = setTimeout(() => ctl.abort(), o.timeoutMs || TIMEOUT_MS);
@@ -330,6 +394,6 @@ if (require.main === module) {
 }
 
 module.exports = {
-    buildPayload, classifyCommand, vocabulary, languagesFromManifest, launcherVersion, send, status, enable, disable,
+    buildPayload, buildSpan, classifyCommand, vocabulary, languagesFromManifest, launcherVersion, send, status, enable, disable,
     osType, endpointError, DURATION_BOUNDS, DEFAULT_ENDPOINT, DEFAULT_TOKEN,
 };

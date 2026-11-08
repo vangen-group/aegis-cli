@@ -22,6 +22,9 @@
 //     list the launcher uses, through the same verifier, BEFORE the old file is
 //     moved aside: a licence that fails verification leaves the working one
 //     untouched and the command fails.
+//   - heartbeat/renew may answer with a rotated device_secret. That value is
+//     never trusted sight unseen: it is probed with a real authenticated call
+//     and stored only if it works (see rotateCredentialIfNeeded).
 //   - retire does not keep the licence file. After the seat is released the
 //     offline verifier would still report `status: valid` -- it checks a
 //     signature, not the service's ledger -- so the local files are deleted
@@ -121,6 +124,8 @@ async function call(url, method, authorization) {
 // licence id has to be in the file: the header the service expects is
 // <license>.<activation>.<secret>, and re-deriving it from the licence token
 // would mean trusting an unverified payload to address an authenticated call.
+// (This is the strict twin of aegis-activate.js's reader: it dies instead of
+// returning null, because every verb here spends the credential it reads.)
 function readCredential(file) {
     if (!fs.existsSync(file)) {
         die('this machine is not activated: no device credential at ' + file
@@ -246,6 +251,80 @@ function stamp() {
     return new Date().toISOString().replace(/[:.]/g, '-');
 }
 
+// Whether a credential the service hands back actually authenticates, probed
+// with a real heartbeat carrying it -- the same pattern as aegis-activate.js.
+// The response is drained and never logged (SEC-24): only the acceptance
+// matters.
+async function secretAuthenticates(apiUrl, licenseId, activationId, secret) {
+    const guard = abortAfter(REQUEST_TIMEOUT_MS);
+    try {
+        const res = await fetch(apiUrl + '/v1/activations/heartbeat', {
+            method: 'POST',
+            headers: { authorization: 'Aegis-Device ' + licenseId + '.' + activationId + '.' + secret },
+            signal: guard.signal,
+        });
+        await res.text();
+        return res.ok;
+    } catch (e) {
+        return false;
+    } finally {
+        guard.dispose();
+    }
+}
+
+// S6: the service may rotate the device_secret on a heartbeat or renew (the
+// response carries a device_secret field only when it did). The rotated value
+// is unproven until it has authenticated, and this machine already holds a
+// working credential -- so it is probed first, and written ONLY if the probe
+// succeeds, through the same atomic temp+rename writePrivate the activator
+// uses (a crash midway leaves the previous file intact, never a half-written
+// credential). On a failed probe the old credential is kept untouched: it is
+// still within the service's grace window and the rotation is retried on a
+// later run. Returns { stored } or null when the response carried no rotation.
+async function rotateCredentialIfNeeded(apiUrl, credentialFile, credential, parsed) {
+    const rotated = parsed && typeof parsed.device_secret === 'string' ? parsed.device_secret : null;
+    if (rotated === null || rotated === '' || rotated === credential.device_secret) return null;
+
+    const licenseId = typeof parsed.license_id === 'string' && parsed.license_id !== ''
+        ? parsed.license_id : credential.license_id;
+    const activationId = typeof parsed.activation_id === 'string' && parsed.activation_id !== ''
+        ? parsed.activation_id : credential.activation_id;
+
+    if (!await secretAuthenticates(apiUrl, licenseId, activationId, rotated)) {
+        process.stderr.write('aegis-license-api: the service offered a rotated device credential, but the new '
+            + 'value did not authenticate; the current credential was kept and the rotation will be '
+            + 'retried on a later run. If this keeps failing, re-activate: aegis license activate '
+            + credential.license_id + '\n');
+        return { stored: false };
+    }
+
+    const json = JSON.stringify({ license_id: licenseId, activation_id: activationId, device_secret: rotated });
+    const { tag, blob } = secretProtect.protect(json);
+    try {
+        writePrivate(credentialFile, secretProtect.serialize(tag, blob) + '\n');
+    } catch (e) {
+        // The probe succeeded, so the service may already have retired the old
+        // value; say so instead of reporting success over a credential this
+        // machine cannot store.
+        die('the rotated device credential authenticated but could not be stored at ' + credentialFile + ': '
+            + e.message + '. The previous file was left untouched; if the service no longer accepts it, '
+            + 're-activate: aegis license activate ' + licenseId);
+    }
+    return { stored: true, licenseId, activationId };
+}
+
+// S7: a 401 from a device-authenticated route means exactly one thing this
+// machine can observe: the service did not accept its credential. Whether the
+// seat was revoked, rotated out, or never existed is the service's knowledge
+// (SEC-17 keeps those indistinguishable), so the remedy is the same and the
+// message names no cause: re-activate.
+function credentialRefused(status, parsed, credential) {
+    const message = serviceError(status, parsed);
+    if (status !== 401) return message;
+    return message + '\nthe service did not accept this machine\'s device credential. '
+        + 'Re-activate it: aegis license activate ' + credential.license_id;
+}
+
 async function main() {
     const argv = process.argv.slice(2);
     const verb = argv[0];
@@ -316,7 +395,18 @@ async function main() {
         die('could not reach the licensing service at ' + apiUrl + ': ' + e.message);
     }
 
-    if (!r.ok) die(serviceError(r.status, r.parsed));
+    if (!r.ok) die(credentialRefused(r.status, r.parsed, credential));
+
+    // Only the lifecycle routes rotate: the token route answers with a download
+    // token and retire is on its way out.
+    let rotation = null;
+    if (verb === 'heartbeat' || verb === 'renew') {
+        try {
+            rotation = await rotateCredentialIfNeeded(apiUrl, credentialFile, credential, r.parsed);
+        } catch (e) {
+            die(e && e.message ? e.message : String(e));
+        }
+    }
 
     if (verb === 'token') {
         // The ONE thing this helper prints, and the reason `report` is not used: the caller pipes
@@ -331,11 +421,15 @@ async function main() {
 
     if (verb === 'heartbeat') {
         const seen = r.parsed && typeof r.parsed.last_seen_at === 'string' ? r.parsed.last_seen_at : null;
-        report([
+        const lines = [
             'license_id:    ' + (r.parsed && r.parsed.license_id || credential.license_id),
             'activation_id: ' + (r.parsed && r.parsed.activation_id || credential.activation_id),
             'last_seen_at:  ' + (seen === null ? 'the service did not say' : seen),
-        ]);
+        ];
+        if (rotation !== null && rotation.stored) {
+            lines.push('credential:    rotated (' + credentialFile + ')');
+        }
+        report(lines);
         return;
     }
 
@@ -410,6 +504,9 @@ async function main() {
         'written:       ' + licenseFile,
         'previous:      ' + (backup === null ? 'there was no license file to keep' : backup),
     ];
+    if (rotation !== null && rotation.stored) {
+        lines.push('credential:    rotated (' + credentialFile + ')');
+    }
     report(lines);
 }
 
