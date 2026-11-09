@@ -38,18 +38,6 @@
 #                          --dry-run (or AEGIS_DRY_RUN=1) prints the docker
 #                          exec command that WOULD run and does not touch
 #                          docker at all.
-#   shell/herdr [path] --tunnel <host>:<port>[:<localPort>]
-#                          Repeatable. Opens a 127.0.0.1:<localPort> tunnel
-#                          inside the session for raw TCP clients that cannot
-#                          be told about the proxy (usql, psql, redis-cli);
-#                          the T40 squid rule is still the gate — without it
-#                          the tunnel connects and dies. Lives only with the
-#                          session. Since T40.4 a window made with `allow add
-#                          --port <n> --for <T> --to <host>` opens this same
-#                          tunnel on its own at session start (localhost:<n> ->
-#                          <host>:<n>), and an explicit --tunnel over that local
-#                          port wins over the automatic one.
-#                          See docs/04-red-egress.md.
 #   sandbox <repo> [-- cmd..]
 #                          Boot a disposable, per-repo container from the minimal
 #                          sandbox template with ONLY <repo> mounted and a
@@ -898,17 +886,15 @@ AEGIS_OPENCODE_JSON="${AEGIS_OPENCODE_JSON:-/home/dev/.config/opencode/opencode.
 AEGIS_ENV_FILE="${AEGIS_ENV_FILE:-$HOME/.aegis/environments.json}"
     AEGIS_ALLOWLIST_FILE="${AEGIS_ALLOWLIST_FILE:-$HOME/.aegis/generated/allowlist.txt}"
     AEGIS_ALLOWLIST_CUSTOM_FILE="${AEGIS_ALLOWLIST_CUSTOM_FILE:-$HOME/.aegis/allowlist.custom.json}"
-    AEGIS_ALLOWLIST_PORTS_FILE="${AEGIS_ALLOWLIST_PORTS_FILE:-$HOME/.aegis/generated/allowlist-ports.conf}"
-    # egress-persistent-pairs (T4): one extra_hosts entry per REAL external
-    # domain pair, so its own connection string resolves inside Aegis without
-    # ever changing. Lives under generated/, like the allowlist files above,
-    # for the same reason: 'aegis install'/'update' replace the WHOLE
-    # AEGIS_WORKSTATION_DIR tree, so anything that must survive an update
-    # lives outside it and gets regenerated (see cmd_allow_regenerate_extra_hosts).
+    # dbports: the compose override generate-dbports.sh writes — dev's
+    # extra_hosts (each allowed database host -> the dbports sidecar) and the
+    # sidecar's AEGIS_DB_TARGETS. Lives under generated/, like the allowlist
+    # files above, for the same reason: 'aegis install'/'update' replace the
+    # WHOLE AEGIS_WORKSTATION_DIR tree, so it is regenerated on every 'up'.
     AEGIS_EXTRA_HOSTS_FILE="${AEGIS_EXTRA_HOSTS_FILE:-$HOME/.aegis/generated/docker-compose.extra-hosts.yml}"
-    # The ports path is exported (T40) because compose interpolates it for the
-    # egress-proxy bind mount, exactly like AEGIS_ALLOWLIST_FILE.
-    export AEGIS_ENV_FILE AEGIS_ALLOWLIST_FILE AEGIS_ALLOWLIST_CUSTOM_FILE AEGIS_ALLOWLIST_PORTS_FILE
+    # aegis ssh: the squid include generate-allowlist.sh writes next to the allowlist.
+    AEGIS_SSH_CONF_FILE="${AEGIS_SSH_CONF_FILE:-${AEGIS_ALLOWLIST_FILE%.txt}.ssh.conf}"
+    export AEGIS_ENV_FILE AEGIS_ALLOWLIST_FILE AEGIS_ALLOWLIST_CUSTOM_FILE AEGIS_SSH_CONF_FILE
 # Hide Docker Desktop's "What's next" CLI hints after every docker command.
 export DOCKER_CLI_HINTS=false
 # Resolved against AEGIS_WORKSTATION_DIR (like COMPOSE_FILE/AUDIT_SCRIPT
@@ -921,9 +907,7 @@ GEN_BUILD_CONTEXT_SH="${AEGIS_WORKSTATION_DIR%/}/scripts/generate-build-context.
     GEN_ALLOWLIST_SH="${AEGIS_WORKSTATION_DIR%/}/scripts/generate-allowlist.sh"
     ALLOWLIST_JS="${AEGIS_WORKSTATION_DIR%/}/scripts/aegis-allowlist.js"
     SSH_PROXY_JS="${AEGIS_WORKSTATION_DIR%/}/scripts/ssh-egress-proxy.js"
-    # T40.2: the localhost tunnel helper, resolved exactly like SSH_PROXY_JS and
-    # delivered to the container the same way (exec-cat into the session dir).
-    EGRESS_TUNNEL_JS="${AEGIS_WORKSTATION_DIR%/}/scripts/egress-tunnel.js"
+    GEN_DBPORTS_SH="${AEGIS_WORKSTATION_DIR%/}/scripts/generate-dbports.sh"
 
 # --- T26: readable build output ---------------------------------------------
 # The image build runs through scripts/aegis-build-view.js (see that file),
@@ -990,6 +974,10 @@ _PG_SPIN_PID=""
 _PG_BAR_TOTAL=0
 _PG_BAR_CUR=0
 _PG_BAR_UNIT=""
+
+# The `aegis install` staging copy's known total (bytes), measured from the
+# source before the copy starts; 0 until then, so the bar never invents one.
+_PG_STAGE_TOTAL=0
 
 _pg_live() {
     case "${AEGIS_PROGRESS:-auto}" in
@@ -1255,6 +1243,16 @@ _pg_compose_counts() {
     printf '%s %s\n' "${ready:-0}" "${total:-0}"
 }
 
+# _pg_stage_bytes <stage-dir>: "<staged bytes> <total bytes>" while `aegis
+# install` stages the new version: du of the growing staging tree against the
+# source size measured once before the copy started. Reuses the compose
+# waiter's shape (pg_watch_start polls it), no machinery of its own.
+_pg_stage_bytes() {
+    local k
+    k="$(du -sk "$1" 2>/dev/null | awk '{print $1 + 0}')"
+    printf '%s %s\n' "$(( ${k:-0} * 1024 ))" "${_PG_STAGE_TOTAL:-0}"
+}
+
 # pg_spin_start <label> / pg_spin_stop: for steps with no measurable signal.
 # The spinner exits by itself if this shell dies.
 pg_spin_start() {
@@ -1426,7 +1424,7 @@ compose() {
     # configuration directory explicitly, which can never resolve to the home
     # directory; Docker Desktop needs a native path here, hence _to_native_path.
     local repo_dir="${AEGIS_WORKSTATION_DIR%/}"
-    # egress-persistent-pairs (T4): a SECOND -f, only when the generated
+    # dbports: a SECOND -f, only when the generated
     # extra_hosts override exists — compose merges it over the main file.
     # Passing an explicit -f (above) already opts out of compose's own
     # auto-discovery of a same-directory docker-compose.override.yml, so this
@@ -1970,7 +1968,14 @@ cmd_up() {
     # would make the signature a seal nobody checks for the one run that matters.
     #
     # Same licensed flow as `aegis image pull`, then the shared verify.
+    # progress-up-install S2: the sequence gets numbered steps. The total is
+    # the full sequence's length and never changes; a step that does not run
+    # this time (the build, the allowlist) leaves a gap instead of renumbering
+    # the rest — the viewer sees the skip in the numbering, and the last step
+    # still ends at 5/5.
+    pg_step 1 5 "pulling the signed image"
     pull_and_verify_published_image
+    pg_done 1
 
     # The build context, regenerated from the manifest on EVERY start (network-
     # free, the same step `aegis env rebuild` runs): it is what decides which
@@ -1998,6 +2003,7 @@ cmd_up() {
         else
             log "your environment image for this manifest and product version (${AEGIS_DEV_IMAGE}) is not here yet —"
             log "building it now (first start with this manifest, a new product version, or a pruned image)."
+            pg_step 2 5 "building your environment image"
             # A subshell, so a missing helper's `exit` lands here and gets the
             # refusal below instead of ending the launcher mid-sentence.
             if ! ( build_dev_image "$context_seconds" ); then
@@ -2005,6 +2011,7 @@ cmd_up() {
                 err "fix the cause above and run $(_rebuild_hint)."
                 exit 1
             fi
+            pg_done 2
         fi
     fi
 
@@ -2021,6 +2028,7 @@ cmd_up() {
     # exists yet — see generate-allowlist.sh), so it is safe to run on every
     # `up`, not just after `aegis add/remove environment`.
     if [[ -f "$GEN_ALLOWLIST_SH" ]]; then
+        pg_step 3 5 "generating the egress allowlist"
         # The script is an internal: its output goes to a log, and `aegis` is the
         # only thing that talks to the user (same rule as the rebuild path). When
         # it fails, its tail is what matters — not the whole output.
@@ -2035,15 +2043,17 @@ cmd_up() {
                 langs=" (languages: $(manifest_language_names); tools: $(manifest_tool_names))"
             fi
             log "allowlist updated${langs}"
+            pg_done 3
         else
+            pg_fail 3 "generate-allowlist.sh failed"
             err "WARNING: generate-allowlist.sh failed — egress-proxy may start with a stale/incomplete allowlist"
             err "last lines of its log (${BUILD_LOG_DIR%/}/allowlist-*.log):"
             tail -n 10 "${BUILD_LOG_DIR%/}"/allowlist-*.log 2>/dev/null | sed 's/^/  /' >&2
         fi
     fi
 
-    # egress-persistent-pairs (T4): regenerate the extra_hosts override from
-    # the current pairs BEFORE `compose up` below, same reasoning as the
+    # dbports: regenerate the database override (dev extra_hosts + the
+    # sidecar's AEGIS_DB_TARGETS) from the store BEFORE `compose up` below, same reasoning as the
     # allowlist regenerate just above — an `aegis update` wipes this file
     # (it lives outside AEGIS_WORKSTATION_DIR precisely so IT survives, but
     # the FIRST `up` after an update still needs to rebuild it fresh). The
@@ -2065,6 +2075,7 @@ cmd_up() {
     local up_log="${BUILD_LOG_DIR%/}/up-$(date -u +%Y%m%dT%H%M%SZ).log"
     mkdir -p "${BUILD_LOG_DIR%/}"
     local up_rc=0
+    pg_step 4 5 "starting the stack"
     pg_watch_start services _pg_compose_counts
     # T1 (luks-engine-blindness): the definitive engine probe, and it belongs
     # HERE — immediately before compose creates the container. This is the first
@@ -2082,6 +2093,7 @@ cmd_up() {
         exit 1
     fi
     log "containers up."
+    pg_done 4
 
     # T2 (luks-engine-blindness): the engine probe answered for the directory at
     # start time; this answers for the running container, which is what a session
@@ -2090,6 +2102,7 @@ cmd_up() {
     log "preparing the cache directories."
     docker_exec_path "$DEV_CONTAINER" mkdir -p /home/dev/.cache/go-tmp /home/dev/.cache/exec-tmp
 
+    pg_step 5 5 "first-run init"
     if docker_exec_path "$DEV_CONTAINER" test -f "$FIRST_RUN_MARKER" 2>/dev/null; then
         log "first-run init already done (marker present) — skipping."
     else
@@ -2117,6 +2130,7 @@ cmd_up() {
             err "WARNING: configure-workstation.sh failed — see docs/10-workstation.md (will retry on next 'aegis up')"
         fi
     fi
+    pg_done 5
     log "workstation stack is up."
 }
 
@@ -2286,7 +2300,6 @@ cmd_sandbox() {
     if [[ -f "$GEN_ALLOWLIST_SH" ]]; then
         if AEGIS_ALLOWLIST_SOURCE="${AEGIS_SANDBOX_DIR%/}/config/allowlist.txt" \
             AEGIS_ALLOWLIST_FILE="$sandbox_allowlist" \
-            AEGIS_ALLOWLIST_PORTS_FILE="${allowlist_dir}/allowlist-ports.conf" \
             AEGIS_ALLOWLIST_CUSTOM_FILE="${allowlist_dir}/allowlist.custom.json" \
             bash "$GEN_ALLOWLIST_SH" >>"${BUILD_LOG_DIR%/}/sandbox-allowlist-$(date -u +%Y%m%dT%H%M%SZ).log" 2>&1; then
             log "sandbox: per-repo egress allowlist ready ($(tildify "$sandbox_allowlist"))"
@@ -2537,110 +2550,6 @@ cmd_promote() {
     log "promoted: ${repo_abs} -> /workspace/${rel}. The sandbox is gone."
 }
 
-# T40.2: validates one --tunnel spec and prints it normalized as
-# host:remotePort:localPort (local defaults to remote). A malformed spec
-# prints the reason and returns 1 — the caller exits 2. The host is a domain
-# or an IP literal only: no IPv6, because the ':' separators of the spec and
-# of an IPv6 address would need a syntax the option does not have; no
-# wildcard either — one target per flag, same rule as T40's pairs.
-_tunnel_normalize_spec() {
-    local spec="$1"
-    local -a parts=()
-    local IFS=':'
-    # shellcheck disable=SC2086 # word-splitting on ':' is the whole point
-    read -r -a parts <<<"$spec"
-    IFS=$' \t\n'
-    if [[ "${#parts[@]}" -lt 2 || "${#parts[@]}" -gt 3 ]]; then
-        err "--tunnel takes <host>:<port>[:<localPort>], got: $spec"
-        return 1
-    fi
-    local host="${parts[0]}" rport="${parts[1]}" lport="${parts[2]:-${parts[1]}}"
-    if [[ -z "$host" || ! "$host" =~ ^[A-Za-z0-9._-]+$ ]]; then
-        err "--tunnel needs a hostname or IP literal (no IPv6, no wildcard, no empty host): $spec"
-        return 1
-    fi
-    local p
-    for p in "$rport" "$lport"; do
-        if [[ ! "$p" =~ ^[0-9]+$ ]] || (( 10#$p < 1 || 10#$p > 65535 )); then
-            err "--tunnel ports must be integers 1..65535: $spec"
-            return 1
-        fi
-    done
-    # 3128 is the proxy's own port (egress-tunnel.js repeats the refusal inside
-    # the container, where the bind would actually happen).
-    if (( 10#$lport == 3128 )); then
-        err "--tunnel cannot bind localhost:3128 — that is the egress proxy's own port"
-        return 1
-    fi
-    printf '%s:%d:%d' "$host" "$((10#$rport))" "$((10#$lport))"
-}
-
-# T40.2: warn-check for --tunnel — does a LOADED rule cover CONNECT to this
-# exact pair? It reads the same two generated files `aegis allow test` reads:
-# the fixed CONNECT ports (443/22/2022) live in allowlist.txt by host, any
-# other port lives as a (host,port) pair in the T40 ports file — or, since
-# T40.3, as a port WINDOW there combined with the host being in allowlist.txt
-# (the allowed_https_dst gate). NOT a gate: the rule can arrive from another
-# window after this session started, and squid always remains the authority —
-# which is why a miss is a warning, never a refusal. The awk bodies mirror
-# cmd_allow_test's (copied, not shared, so that command's tested wording
-# stays frozen).
-_tunnel_rule_covers() {
-    local host="$1" port="$2"
-    local fixed=""
-    case "$port" in 443|22|2022) fixed="yes" ;; esac
-    if [[ -n "$fixed" ]]; then
-        [[ -f "$AEGIS_ALLOWLIST_FILE" ]] || return 1
-        awk -v h="$host" '
-            !/^[ \t]*#/ && NF {
-                e = $1
-                if (e == h) { found = 1; exit }
-                if (substr(e, 1, 1) == ".") {
-                    bare = substr(e, 2)
-                    if (h == bare) { found = 1; exit }
-                    if (length(h) > length(bare) && substr(h, length(h) - length(bare)) == "." bare) { found = 1; exit }
-                }
-            }
-            END { exit found ? 0 : 1 }' "$AEGIS_ALLOWLIST_FILE"
-        return
-    fi
-    [[ -f "$AEGIS_ALLOWLIST_PORTS_FILE" ]] || return 1
-    if awk -v h="$host" -v p="$port" '
-        $1 == "acl" && $2 ~ /^aegis_dst_/ && ($3 == "dst" || $3 == "dstdomain") { acl[$2] = $3 " " $4; next }
-        $1 == "http_access" && $2 == "allow" && $3 == "CONNECT" && $5 == "aegis_port_" p && ($4 in acl) {
-            split(acl[$4], v, " ")
-            if (v[1] == "dst" && v[2] == h) { found = 1; exit }
-            if (v[1] == "dstdomain") {
-                e = v[2]
-                if (e == h) { found = 1; exit }
-                if (substr(e, 1, 1) == ".") {
-                    bare = substr(e, 2)
-                    if (h == bare || (length(h) > length(bare) && substr(h, length(h) - length(bare)) == "." bare)) { found = 1; exit }
-                }
-            }
-        }
-        END { exit found ? 0 : 1 }' "$AEGIS_ALLOWLIST_PORTS_FILE"; then
-        return 0
-    fi
-    # T40.3: a live window on this port covers the tunnel's CONNECT too when
-    # the host is already in the loaded list — the same allowed_https_dst gate
-    # cmd_allow_test mirrors. Without this the warn would fire on the
-    # documented window + host + explicit --tunnel path (decision 7).
-    grep -q "^acl aegis_gport_${port} port ${port}\$" "$AEGIS_ALLOWLIST_PORTS_FILE" || return 1
-    [[ -f "$AEGIS_ALLOWLIST_FILE" ]] || return 1
-    awk -v h="$host" '
-        !/^[ \t]*#/ && NF {
-            e = $1
-            if (e == h) { found = 1; exit }
-            if (substr(e, 1, 1) == ".") {
-                bare = substr(e, 2)
-                if (h == bare) { found = 1; exit }
-                if (length(h) > length(bare) && substr(h, length(h) - length(bare)) == "." bare) { found = 1; exit }
-            }
-        }
-        END { exit found ? 0 : 1 }' "$AEGIS_ALLOWLIST_FILE"
-}
-
 # Shared by cmd_shell/cmd_herdr. Argument parsing:
 #   aegis shell [path]                                -> interactive
 #   aegis shell [path] -- cmd args...                 -> non-interactive, propagates exit code
@@ -2653,11 +2562,6 @@ _tunnel_rule_covers() {
 #                                                        target up to /workspace) and its
 #                                                        `# aegis-env: app1, app2` line ->
 #                                                        envs/<that folder's name>/appN.
-#   aegis shell [path] --tunnel <host>:<port>[:<localPort>]
-#                                                     -> T40.2: repeatable; a localhost tunnel
-#                                                        for TCP clients that cannot use a proxy
-#                                                        (usql, psql, redis-cli). The T40 squid
-#                                                        rule is still the gate.
 _exec_in_container() {
     local entry="$1"
     shift
@@ -2665,7 +2569,6 @@ _exec_in_container() {
     local rel_set=0
     local -a secrets=()
     local -a env_names=()
-    local -a tunnels=()
     local dry_run="${AEGIS_DRY_RUN:-0}"
     local -a extra_cmd=()
     local seen_dashdash=0
@@ -2691,11 +2594,9 @@ _exec_in_container() {
                 shift 2
                 ;;
             --tunnel)
-                [[ $# -ge 2 ]] || { err "--tunnel requires a value: <host>:<port>[:<localPort>]"; exit 2; }
-                local _tspec
-                _tspec="$(_tunnel_normalize_spec "$2")" || exit 2
-                tunnels+=("$_tspec")
-                shift 2
+                err "--tunnel was removed: database clients reach an allowed database by its real name through dbports."
+                err "allow it once with: aegis allow add db <host> --port <n>"
+                exit 2
                 ;;
             --dry-run)
                 dry_run=1
@@ -2722,99 +2623,12 @@ _exec_in_container() {
         esac
     done
 
-    # Two --tunnel flags cannot share one local bind: the second helper would
-    # die on EADDRINUSE and the dev would only find it in tunnels.log.
-    if [[ "${#tunnels[@]}" -gt 1 ]] \
-        && printf '%s\n' "${tunnels[@]}" | awk -F: '{ print $3 }' | sort | uniq -d | grep -q .; then
-        err "--tunnel: two tunnels cannot bind the same localhost port"
-        exit 2
-    fi
-
     # An explicit --env name is checked before anything touches docker; `auto`
     # names are checked once they are resolved from the .envrc.
     local _en
     for _en in "${env_names[@]}"; do
         [[ "$_en" == "auto" ]] || vault_require_name "$_en" "aegis shell --env auto|<name>"
     done
-
-    # --- auto-tunnels: one per ACTIVE port WINDOW that carries --to (T40.4),
-    # AND one per ACTIVE permanent (host,port) PAIR (T40.2, restored 2026-10-24
-    # alongside pair creation itself — egress-persistent-pairs T2). Both share
-    # one dedupe pass against explicit --tunnel (by exact host:port pair AND by
-    # local port) and against each other (by local port, windows checked first
-    # below, so a window wins a collision over a pair): the first writer of a
-    # local port keeps it, every later one is skipped with a log line, never a
-    # failure. `aegis shell`/`herdr` never guess silently past a collision.
-    # Both read their canonical source fresh from the store on every session
-    # start — the store's `windows`/`ports` verbs, NOT the generated squid
-    # include: the include is a compilation artifact that lags behind a failed
-    # regenerate, while the store verbs apply the same validity+expiry filters
-    # the generator itself uses. Zero rules of a kind means total silence for
-    # that kind — a session with none of either gains no lines and no process.
-    local -a auto_specs=()
-    local -a auto_notes=()
-    if [[ -f "$AEGIS_ALLOWLIST_CUSTOM_FILE" ]]; then
-        if ! command -v node >/dev/null 2>&1 || [[ ! -f "$ALLOWLIST_JS" ]]; then
-            log "auto-tunnels skipped: node/aegis-allowlist.js is not available (an explicit --tunnel still works)."
-        else
-            local _at _ah _arest _apr _alport
-            local occ_pairs="" occ_lports="" occ_auto=""
-            for _at in "${tunnels[@]:-}"; do
-                [[ -n "$_at" ]] || continue
-                _ah="${_at%%:*}"; _arest="${_at#*:}"; _apr="${_arest%%:*}"; _alport="${_arest#*:}"
-                occ_pairs="${occ_pairs}${occ_pairs:+ }${_ah}:${_apr}"
-                occ_lports="${occ_lports}${occ_lports:+ }${_alport}"
-            done
-
-            # T40.4: windows that carry --to — D4/D8, unchanged.
-            local _awins _ap _aexpires _ato
-            _awins="$(node "$ALLOWLIST_JS" windows "$AEGIS_ALLOWLIST_CUSTOM_FILE" 2>/dev/null || true)"
-            while IFS=$'\t' read -r _ap _aexpires _ato; do
-                # No port, or no seed: no tunnel. This is the silence D4 asks for.
-                [[ -n "$_ap" && -n "$_ato" ]] || continue
-                if (( 10#$_ap == 3128 )); then
-                    log "auto omitido: localhost:3128 es el puerto del propio proxy"
-                    continue
-                fi
-                case " ${occ_lports} ${occ_auto} " in
-                    *" ${_ap} "*)
-                        log "auto omitido: localhost:${_ap} ya lo ocupa --tunnel u otro auto-túnel"
-                        continue ;;
-                esac
-                occ_auto="${occ_auto}${occ_auto:+ }${_ap}"
-                auto_specs+=("${_ato}:${_ap}:${_ap}")
-                auto_notes+=("ventana hasta ${_aexpires:-<sin expiry>}")
-            done <<<"$_awins"
-
-            # T40.2 (restored 2026-10-24): permanent (host,port) pairs. A pair
-            # never expires (the CLI refuses --for on one, see cmd_allow_add),
-            # so its note never talks about an expiry the way a window's does.
-            local _apairs _ameta _ph _pp _reason
-            _apairs="$(node "$ALLOWLIST_JS" ports "$AEGIS_ALLOWLIST_CUSTOM_FILE" 2>/dev/null || true)"
-            _ameta="$(node "$ALLOWLIST_JS" detail "$AEGIS_ALLOWLIST_CUSTOM_FILE" 2>/dev/null || true)"
-            while IFS=$'\t' read -r _ph _pp; do
-                [[ -n "$_ph" && -n "$_pp" ]] || continue
-                if (( 10#$_pp == 3128 )); then
-                    log "auto omitido: ${_ph}:${_pp} — localhost:3128 es el puerto del propio proxy"
-                    continue
-                fi
-                case " ${occ_pairs} " in
-                    *" ${_ph}:${_pp} "*)
-                        log "auto omitido: ${_ph}:${_pp} ya tunelizado por --tunnel"
-                        continue ;;
-                esac
-                case " ${occ_lports} ${occ_auto} " in
-                    *" ${_pp} "*)
-                        log "auto omitido: ${_ph}:${_pp} — localhost:${_pp} ya lo ocupa --tunnel u otro auto-túnel"
-                        continue ;;
-                esac
-                occ_auto="${occ_auto}${occ_auto:+ }${_pp}"
-                _reason="$(printf '%s\n' "$_ameta" | awk -F'\t' -v k="${_ph}:${_pp}" '$1 == k && $3 != "" { print $3; exit }')"
-                auto_specs+=("${_ph}:${_pp}:${_pp}")
-                auto_notes+=("par permanente \"${_reason:-sin motivo}\"")
-            done <<<"$_apairs"
-        fi
-    fi
 
     local target
     target="$(resolve_workspace_path "$rel")"
@@ -2883,23 +2697,6 @@ _exec_in_container() {
                 fi
             done
         fi
-        if [[ "${#tunnels[@]}" -gt 0 ]]; then
-            local _t _th _tr _tl
-            for _t in "${tunnels[@]}"; do
-                _th="${_t%%:*}"; _tr="${_t#*:}"; _tr="${_tr%%:*}"; _tl="${_t##*:}"
-                log "[dry-run] would start tunnel localhost:${_tl} -> ${_th}:${_tr} (via egress proxy) for this session only."
-            done
-        fi
-        # T40.4: the window seeds are announced the same way — nothing here
-        # touches docker, and the store is the only source being read.
-        if [[ "${#auto_specs[@]}" -gt 0 ]]; then
-            local _ai _aspec _ahost _arest _aport
-            for _ai in "${!auto_specs[@]}"; do
-                _aspec="${auto_specs[$_ai]}"
-                _ahost="${_aspec%%:*}"; _arest="${_aspec#*:}"; _aport="${_arest%%:*}"
-                log "[dry-run] would start auto-tunnel localhost:${_aport} -> ${_ahost}:${_aport} (${auto_notes[$_ai]})."
-            done
-        fi
         log "[dry-run] nothing was sent to docker."
         return 0
     fi
@@ -2939,91 +2736,6 @@ _exec_in_container() {
         entry_cmd=(sh -c "$SESSION_WRAPPER_SH" _ "$entry")
     fi
 
-    # --- T40.2: localhost tunnels for TCP clients that do not know proxies ----
-    # usql/psql/redis-cli cannot be pointed at a proxy — they dial
-    # localhost:<port>. Each tunnel listens on 127.0.0.1 ONLY inside the dev
-    # container (a 0.0.0.0 bind would hand every other devnet container an
-    # exit the allowlist never granted) and forwards every connection through
-    # ssh-egress-proxy.js, REUSED AS-IS — the one CONNECT implementation that
-    # has existed since T24. The squid rule (T40) is still the gate: without
-    # a rule covering the pair — a T40.3 window (`aegis allow add --port <rport>
-    # --for <T>`) with the host in the allowlist, or a pair entry already in
-    # the store — the helper draws a 403 and the tunnel dies with it; the echo
-    # says so every time.
-    #
-    # Delivered the same way ssh-egress-proxy.js already reaches the container:
-    # `docker exec -i ... cat >` into a per-session directory under the
-    # /run/ssh-session tmpfs — never a new mount, never the read-only repo.
-    # A dedicated directory (not the ssh one): the tunnels live and die with
-    # the session through a host-side cleanup below, independently of which
-    # entry_cmd wrapper (secret trap, env wrapper) is in play.
-    #
-    # Order: after ensure_up and after the secret/env injection, before the
-    # session process starts — so the passphrase prompts never interleave with
-    # the tunnel echoes and the port is listening by the first command. The
-    # log and the pidfile live INSIDE that directory (not /run/aegis-tunnels.log):
-    # the container runs as uid 1000 and /run is root-owned, so the literal
-    # path from the feature doc could not be created — same tmpfs, same scope.
-    local tunnel_dir=""
-    # The helpers are delivered by exec-cat from AEGIS_WORKSTATION_DIR. Missing
-    # them is a hard failure for an explicit --tunnel (the session was asked for
-    # that port and cannot honour it); for T40.4's window seeds it is a skipped
-    # convenience, said out loud — a session must not refuse to open because of
-    # a seed the store still holds.
-    if [[ ( "${#tunnels[@]}" -gt 0 || "${#auto_specs[@]}" -gt 0 ) \
-        && ( ! -f "$EGRESS_TUNNEL_JS" || ! -f "$SSH_PROXY_JS" ) ]]; then
-        if [[ "${#tunnels[@]}" -gt 0 ]]; then
-            err "--tunnel needs scripts/egress-tunnel.js and scripts/ssh-egress-proxy.js, missing under ${AEGIS_WORKSTATION_DIR%/}/scripts — run 'aegis install' or 'aegis update'."
-            exit 1
-        fi
-        err "auto-tunnels skipped: scripts/egress-tunnel.js or scripts/ssh-egress-proxy.js missing under ${AEGIS_WORKSTATION_DIR%/}/scripts — run 'aegis install' or 'aegis update'."
-        auto_specs=()
-        auto_notes=()
-    fi
-    if [[ "${#tunnels[@]}" -gt 0 || "${#auto_specs[@]}" -gt 0 ]]; then
-        tunnel_dir="/run/ssh-session/$(printf '%04x%04x%04x' "$$" "$RANDOM" "$RANDOM")"
-        docker_exec_path "$DEV_CONTAINER" sh -c 'mkdir -p "$1" && chmod 700 "$1"' sh "$tunnel_dir"
-        docker_exec_path -i "$DEV_CONTAINER" sh -c \
-            'cat > "$1" && chmod 700 "$1"' sh "${tunnel_dir}/egress-tunnel.js" < "$EGRESS_TUNNEL_JS"
-        docker_exec_path -i "$DEV_CONTAINER" sh -c \
-            'cat > "$1" && chmod 700 "$1"' sh "${tunnel_dir}/ssh-egress-proxy.js" < "$SSH_PROXY_JS"
-        local t thost trest trport tlport hint
-        for t in "${tunnels[@]}"; do
-            thost="${t%%:*}"; trest="${t#*:}"; trport="${trest%%:*}"; tlport="${trest#*:}"
-            if ! _tunnel_rule_covers "$thost" "$trport"; then
-                err "WARNING: no loaded rule covers ${thost}:${trport} — the tunnel starts anyway and dies on 403 until the allow rule exists (the rule may also live in another session's regenerated list; squid is the authority)."
-            fi
-            # exec -d: detached INSIDE the session's container — the process is
-            # a child of the container init, so `aegis stop`/`down` also reaps
-            # it; the host-side cleanup below is what ties it to THIS session.
-            # Every interpolated value passed _tunnel_normalize_spec's regexes,
-            # so there is nothing left to escape inside the single quotes.
-            docker_exec_path -d "$DEV_CONTAINER" sh -c \
-                "echo \$\$ >> '${tunnel_dir}/tunnels.pid'; exec node '${tunnel_dir}/egress-tunnel.js' '${thost}' '${trport}' '${tlport}' >> '${tunnel_dir}/tunnels.log' 2>&1"
-            # The pair-shaped add was retracted from the CLI (2026-10-13): the
-            # live way to open a port is the window; fixed ports stay host-only.
-            hint="aegis allow add --port ${trport} --for 2h"
-            case "$trport" in 443|22|2022) hint="aegis allow add ${thost}" ;; esac
-            log "tunnel localhost:${tlport} -> ${thost}:${trport} (via egress proxy; needs '${hint}' rule — without it the tunnel connects and dies)"
-        done
-
-        # T40.4 (D4): the window seeds, same mechanics, local = the window's own
-        # port. The echo names the destination it came from; a seed whose window
-        # or host is not in the LOADED files still gets its tunnel, with the
-        # reload warning — squid, not the store, is the authority.
-        local _ai _as _ahost _arest _aport
-        for _ai in "${!auto_specs[@]}"; do
-            _as="${auto_specs[$_ai]}"
-            _ahost="${_as%%:*}"; _arest="${_as#*:}"; _aport="${_arest%%:*}"
-            if ! _tunnel_rule_covers "$_ahost" "$_aport"; then
-                err "WARNING: la ventana :${_aport} o su host ${_ahost} no están en la lista cargada — run 'aegis allow reload'; until then the auto-tunnel connects and dies on 403."
-            fi
-            docker_exec_path -d "$DEV_CONTAINER" sh -c \
-                "echo \$\$ >> '${tunnel_dir}/tunnels.pid'; exec node '${tunnel_dir}/egress-tunnel.js' '${_ahost}' '${_aport}' '${_aport}' >> '${tunnel_dir}/tunnels.log' 2>&1"
-            log "auto-tunnel localhost:${_aport} -> ${_ahost}:${_aport} (${auto_notes[$_ai]})"
-        done
-    fi
-
     local rc=0
     if [[ "$dry_run" -ne 1 ]]; then
         # T2 (luks-engine-blindness): never attach a session to a /workspace the
@@ -3038,22 +2750,6 @@ _exec_in_container() {
         docker_exec_path -it -w "$target" "${env_args[@]}" "$DEV_CONTAINER" "${entry_cmd[@]}" || rc=$?
     fi
 
-    # T40.2: the tunnel dies with the session. The session command has returned
-    # (or failed), so its tunnels have no reason to stay: kill the PIDs the
-    # `exec -d` lines wrote, and remove the directory with the scripts, the log
-    # and the pidfile. || true: a container that died underneath the session
-    # must not turn a clean exit into a crash. Honest limit: if the launcher
-    # itself is SIGKILLed mid-session, the tunnels survive until the container
-    # stops (nothing host-side is left to run this cleanup).
-    if [[ -n "$tunnel_dir" ]]; then
-        docker_exec_path "$DEV_CONTAINER" sh -c '
-            if [ -f "$1/tunnels.pid" ]; then
-                while IFS= read -r p; do kill "$p" 2>/dev/null || true; done < "$1/tunnels.pid"
-            fi
-            rm -rf "$1"
-        ' sh "$tunnel_dir" || true
-    fi
-
     return "$rc"
 }
 
@@ -3064,6 +2760,17 @@ _exec_in_container() {
 # can widen the egress: from inside the container none of this is reachable, so
 # an agent cannot open itself a way out (see config/squid.conf).
 # ---------------------------------------------------------------------------
+cmd_allow_usage() {
+    err "usage: aegis allow list"
+    err "       aegis allow add <domain> [--reason \"...\"] [--for 30m|2h|7d] [--ip]"
+    err "       aegis allow add db <host> --port <n> [--reason \"...\"]   (a database, reached by its real name through dbports)"
+    err "       aegis allow remove <domain>"
+    err "       aegis allow remove <host> <n>   (take that database back out)"
+    err "       aegis allow reload"
+    err "       aegis allow denied [--last <log-lines>]"
+    err "       aegis allow test <url>"
+}
+
 cmd_allow() {
     local action="${1:-list}"
     [[ $# -gt 0 ]] && shift || true
@@ -3075,15 +2782,7 @@ cmd_allow() {
         denied) cmd_allow_denied "$@" ;;
         test)   cmd_allow_test "$@" ;;
         *)
-            err "usage: aegis allow list"
-            err "       aegis allow add <domain> [--reason \"...\"] [--for 30m|2h|7d] [--ip]"
-            err "       aegis allow add <domain> --port <n> [--reason \"...\"]   (permanent pair: CONNECT to that host:port only; 'host' = this machine)"
-            err "       aegis allow add --port <n> --for 30m|2h|7d [--to <host>] [--reason \"...\"]   (T40.3: port window; T40.4: --to seeds its auto-tunnel)"
-            err "       aegis allow remove <domain>"
-            err "       aegis allow remove --port <n>   (T40.3: take that port window back out)"
-            err "       aegis allow reload"
-            err "       aegis allow denied [--last <log-lines>]"
-            err "       aegis allow test <url>"
+            cmd_allow_usage
             exit 2
             ;;
     esac
@@ -3129,91 +2828,54 @@ proxy_reload() {
     return 1
 }
 
-# Rewrites the effective allowlist from the template + the manifest + your own
-# entries, and then makes the running proxy read it (T27, slice 3).
-# egress-persistent-pairs (T4): one extra_hosts entry per REAL external pair
-# domain, so ITS OWN connection string resolves inside Aegis unchanged — the
-# same trick the static `host` alias gets for free, extended to a domain that
-# is not known ahead of time. The reserved alias itself is excluded: nothing
-# ever dials the literal "host.docker.internal" from inside a session, only
-# the compose-time constant "host" does, and that already has its mapping.
+# dbports: regenerates the compose override (dev's extra_hosts for every
+# allowed database host -> the dbports sidecar, plus the sidecar's
+# AEGIS_DB_TARGETS) from the store's database entries, through
+# scripts/generate-dbports.sh. compose() loads that file as a second -f.
 # Returns 0 when the file's content actually CHANGED (the caller decides
-# whether that is worth recreating the container for), 1 on a write failure.
+# whether that is worth recreating dev/dbports), 1 otherwise or on failure.
 cmd_allow_regenerate_extra_hosts() {
     cmd_allow_need_node || return 1
-    local -a domains=()
-    if [[ -f "$AEGIS_ALLOWLIST_CUSTOM_FILE" ]]; then
-        local _eh _ep
-        while IFS=$'\t' read -r _eh _ep; do
-            [[ -n "$_eh" && "$_eh" != "host.docker.internal" ]] || continue
-            case " ${domains[*]:-} " in *" ${_eh} "*) continue ;; esac
-            domains+=("$_eh")
-        done < <(node "$ALLOWLIST_JS" ports "$AEGIS_ALLOWLIST_CUSTOM_FILE" 2>/dev/null || true)
+    if [[ ! -f "$GEN_DBPORTS_SH" ]]; then
+        err "WARNING: scripts/generate-dbports.sh is missing under ${AEGIS_WORKSTATION_DIR%/} — run 'aegis install' or 'aegis update'."
+        return 1
     fi
     local target="$AEGIS_EXTRA_HOSTS_FILE"
     local before="" after=""
     [[ -f "$target" ]] && before="$(cat "$target" 2>/dev/null || true)"
-    if [[ "${#domains[@]}" -eq 0 ]]; then
-        rm -f "$target" 2>/dev/null || true
-    else
-        mkdir -p "$(dirname "$target")" 2>/dev/null
-        # Domain validation (aegis-allowlist.js) never rejects a literal `"`
-        # or `\` — those are fine in a squid dstdomain ACL but NOT inside a
-        # double-quoted YAML scalar, where an unescaped one breaks the whole
-        # file. compose() loads this file on EVERY compose() call once it
-        # exists, so a broken write here fails 'aegis up/down/stop/status'
-        # fleet-wide, not just this one pair — escape first, write to a temp
-        # file in the same directory and rename into place (atomic: a crash
-        # mid-write leaves the old file intact, not a half-written one that
-        # would cause that exact fleet-wide breakage).
-        local tmp="${target}.tmp.$$"
-        {
-            printf '%s\n' \
-                '# Generated by aegis allow add/remove/reload — do not edit, do not commit.' \
-                '# One entry per external-domain pair: its own connection string resolves' \
-                '# here to the container loopback, where that pair'"'"'s auto-tunnel listens.' \
-                'services:' \
-                '  dev:' \
-                '    extra_hosts:'
-            local _d _esc
-            for _d in "${domains[@]}"; do
-                _esc="${_d//\\/\\\\}"
-                _esc="${_esc//\"/\\\"}"
-                printf '      - "%s:127.0.0.1"\n' "$_esc"
-            done
-        } >"$tmp" && mv -f "$tmp" "$target" || {
-            rm -f "$tmp" 2>/dev/null
-            err "WARNING: could not write ${target} — external pair domains will not resolve inside Aegis until this is retried."
-            return 1
-        }
+    if ! ALLOWLIST_JS="$ALLOWLIST_JS" AEGIS_EXTRA_HOSTS_FILE="$target" \
+        AEGIS_ALLOWLIST_CUSTOM_FILE="$AEGIS_ALLOWLIST_CUSTOM_FILE" \
+        bash "$GEN_DBPORTS_SH" >/dev/null; then
+        err "WARNING: the dbports configuration could not be generated — the previous one stays in place."
+        return 1
     fi
     [[ -f "$target" ]] && after="$(cat "$target" 2>/dev/null || true)"
     [[ "$before" != "$after" ]]
 }
 
-# Shared by add/remove/reload: regenerate the extra_hosts override, and only
-# if that actually changed something AND a dev container is running, recreate
-# it so Docker's daemon re-applies the new DNS mapping — nothing inside a
-# running container can rewrite its own /etc/hosts (see
-# odd/tasks/egress-persistent-pairs.md). This is the one action in this whole
-# feature that can interrupt an open session; the user accepted that cost
-# explicitly for being the sole user of their own Aegis instance. It is NEVER
-# silent: told before it happens, told again if it fails.
+# Shared by add/remove/reload: regenerate the dbports override, and only if
+# that actually changed something AND a dev container is running, recreate
+# dev and dbports so Docker's daemon re-applies the new DNS mapping and the
+# sidecar its new listeners — nothing inside a running container can rewrite
+# its own /etc/hosts. This interrupts an open session, so it is NEVER silent:
+# told before it happens, told again if it fails.
 _allow_apply_extra_hosts() {
     cmd_allow_regenerate_extra_hosts || return 0
     is_up || return 0
-    log "recreando el contenedor de Aegis para que la nueva regla de dominio resuelva adentro — esto corta tu sesión activa (reabrila al terminar; tus archivos no se pierden, es el mismo volumen)."
+    log "recreando dev y dbports para aplicar la lista de bases de datos — esto corta tu sesión activa (reabrila al terminar; tus archivos no se pierden, es el mismo volumen)."
     local recreate_rc=0
-    pg_watch_start services _pg_compose_counts dev
-    compose up -d --wait --no-build dev >"${BUILD_LOG_DIR%/}/extra-hosts-$(date -u +%Y%m%dT%H%M%SZ).log" 2>&1 || recreate_rc=$?
+    pg_watch_start services _pg_compose_counts dev dbports
+    compose up -d --wait --no-build dev dbports >"${BUILD_LOG_DIR%/}/dbports-$(date -u +%Y%m%dT%H%M%SZ).log" 2>&1 || recreate_rc=$?
     pg_watch_stop
     if [[ "$recreate_rc" -eq 0 ]]; then
-        log "contenedor recreado."
+        log "dev y dbports recreados."
     else
-        err "WARNING: no se pudo recrear el contenedor — el dominio no va a resolver hasta 'aegis up'."
+        err "WARNING: no se pudo recrear dev/dbports — la lista de bases de datos se aplica en el próximo 'aegis up'."
     fi
 }
 
+# Rewrites the effective allowlist from the template + the manifest + your own
+# entries, and then makes the running proxy read it (T27, slice 3).
 cmd_allow_regenerate() {
     if [[ -f "$GEN_ALLOWLIST_SH" ]]; then
         if bash "$GEN_ALLOWLIST_SH" >>"${BUILD_LOG_DIR%/}/allowlist-$(date -u +%Y%m%dT%H%M%SZ).log" 2>&1; then
@@ -3373,8 +3035,6 @@ cmd_allow_test() {
     log "host: $host   port: $port   scheme: $scheme"
     echo
 
-    # `hit` is reused below by the T40.3 window fallback: a window only opens
-    # this port for hosts ALREADY in the loaded list (gate = allowed_https_dst).
     local hit=""
     if [[ -f "$AEGIS_ALLOWLIST_FILE" ]]; then
         hit="$(awk -v h="$host" '
@@ -3399,78 +3059,32 @@ cmd_allow_test() {
         err "the effective allowlist has not been generated yet: run 'aegis up' once."
     fi
 
-    # T40: a port outside the fixed rules lives ONLY as a (host,port) pair, so
-    # for those the allowlist answer above is not the whole story. Report the
-    # pair against the generated ports file BEFORE probing — same two-step
-    # logic: what the file says first, the proxy's own answer after.
+    # The proxy carries only the fixed web ports. Any other port is an SSH
+    # server registered with `aegis ssh` (one exact host:port each), a database
+    # (dbports), or nothing at all: say which, from the store's `sshs`/`dbs`.
     local fixed_port=""
     case "$port" in
-        443|22|2022) fixed_port="yes" ;;
+        443) fixed_port="yes" ;;
         80)          [[ "$scheme" == "http" ]] && fixed_port="yes" ;;
     esac
     if [[ -z "$fixed_port" ]]; then
-        local pair_hit=""
-        if [[ -f "$AEGIS_ALLOWLIST_PORTS_FILE" ]]; then
-            pair_hit="$(awk -v h="$host" -v p="$port" '
-                $1 == "acl" && $2 ~ /^aegis_dst_/ && ($3 == "dst" || $3 == "dstdomain") { acl[$2] = $3 " " $4; next }
-                $1 == "http_access" && $2 == "allow" && $3 == "CONNECT" && $5 == "aegis_port_" p && ($4 in acl) {
-                    split(acl[$4], v, " ")
-                    if (v[1] == "dst" && v[2] == h) { print h ":" p " (dst)"; exit }
-                    if (v[1] == "dstdomain") {
-                        e = v[2]
-                        if (e == h) { print h ":" p " (dstdomain)"; exit }
-                        if (substr(e, 1, 1) == ".") {
-                            bare = substr(e, 2)
-                            if (h == bare || (length(h) > length(bare) && substr(h, length(h) - length(bare)) == "." bare)) { print h ":" p " via dstdomain " e; exit }
-                        }
-                    }
-                }' "$AEGIS_ALLOWLIST_PORTS_FILE")"
+        local db_hit="" ssh_hit=""
+        if [[ -f "$AEGIS_ALLOWLIST_CUSTOM_FILE" ]] && command -v node >/dev/null 2>&1 && [[ -f "$ALLOWLIST_JS" ]]; then
+            ssh_hit="$(node "$ALLOWLIST_JS" sshs "$AEGIS_ALLOWLIST_CUSTOM_FILE" 2>/dev/null |
+                awk -F'\t' -v h="$host" -v p="$port" '$1 == h && $2 == p { print $3; exit }')"
+            db_hit="$(node "$ALLOWLIST_JS" dbs "$AEGIS_ALLOWLIST_CUSTOM_FILE" 2>/dev/null |
+                awk -F'\t' -v h="$host" -v p="$port" '$1 == h && $2 == p { print; exit }')"
         fi
-        if [[ -n "$pair_hit" ]]; then
-            log "the ports file (T40): MATCHES $pair_hit — CONNECT to that exact pair is open."
+        if [[ -n "$ssh_hit" ]]; then
+            log "SSH: $host:$port is open for the key ${ssh_hit} (aegis ssh) — exactly this host and port."
+        elif [[ -n "$db_hit" ]]; then
+            log "dbports: $host:$port is an allowed database — dev resolves $host to dbports, which forwards to the real host."
         else
-            # T40.3: the same file can open this port for EVERY host in the
-            # loaded list through a window (the gate is allowed_https_dst,
-            # never "any"), so the pair being absent says nothing on its own.
-            # Both sources are the ones this command already reads: the rule
-            # lives in the generated ports file, the expiry in the store's
-            # `windows` (a window the store no longer sees as live is a stale
-            # generate — said here instead of hidden).
-            local window_open=""
-            if [[ -n "$hit" ]] && [[ -f "$AEGIS_ALLOWLIST_PORTS_FILE" ]] &&
-                grep -q "^acl aegis_gport_${port} port ${port}\$" "$AEGIS_ALLOWLIST_PORTS_FILE"; then
-                window_open="abierto por ventana :${port}"
-                if [[ -f "$AEGIS_ALLOWLIST_CUSTOM_FILE" ]] && command -v node >/dev/null 2>&1 && [[ -f "$ALLOWLIST_JS" ]]; then
-                    local wline wexp wto
-                    wline="$(node "$ALLOWLIST_JS" windows "$AEGIS_ALLOWLIST_CUSTOM_FILE" 2>/dev/null |
-                        awk -F'\t' -v p="$port" '$1 == p { print; exit }')"
-                    wexp="$(printf '%s\n' "$wline" | awk -F'\t' '{ print $2 }')"
-                    # T40.4 (D6): the store's third column is the window's seed,
-                    # and the promise it makes is about ONE destination. Say
-                    # "tunnel at session start" only when the host being tested
-                    # IS that seed — the same port opened for another listed host
-                    # is still the plain window answer, because no tunnel dials it.
-                    wto="$(printf '%s\n' "$wline" | awk -F'\t' '{ print $3 }')"
-                    if [[ -n "$wto" && "${wto,,}" == "${host,,}" ]]; then
-                        window_open="abierto por ventana (tunel automatico activo al abrir sesion)"
-                    fi
-                    if [[ -n "$wexp" ]]; then
-                        window_open="${window_open} (vence ${wexp})"
-                    else
-                        window_open="${window_open} (vencida: el archivo generado la sigue cargando hasta el próximo regenerate)"
-                    fi
-                fi
-            fi
-            if [[ -n "$window_open" ]]; then
-                log "the ports file (T40.3): $host:$port $window_open — entra por la ventana global, no por un par declarado."
-            else
-                local suggest="aegis allow add --port $port --for 2h"
-                local ip_flag=""
-                [[ "$host" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] && ip_flag=" --ip"
-                log "the ports file (T40): NO rule for $host:$port — the proxy would deny this pair (403)."
-                log "open the port with a window: $suggest — habilita $port para TODOS los hosts de la allowlist; $host debe estar en la lista (si falta: aegis allow add $host$ip_flag)"
-            fi
+            log "the egress proxy only carries ports 443 and 80, plus SSH per registered server: $host:$port is not open."
+            log "if it is an SSH server: aegis ssh new <name> --host $host --port $port   (or: aegis ssh set <name> --host $host --port $port)"
+            log "if it is a database: aegis allow add db $host --port $port --reason \"<por que>\""
         fi
+        return 0
     fi
 
     local running
@@ -3533,15 +3147,11 @@ EOF
     fi
 }
 
-# egress-persistent-pairs (S2): `host` is the one reserved alias, meaning "the
-# machine Aegis itself runs on" — host.docker.internal under the hood. It
-# exists ONLY so the user never has to type or think about that Docker-internal
-# name: the allow/remove/test surface accepts the short word, but everything
-# that reaches squid or the tunnel (the ACL, _tunnel_rule_covers, the auto-
-# tunnel's real dial target) uses the real name, because that is what actually
-# travels in a CONNECT request — "host" itself is never a routable destination,
-# it only resolves (via the static `extra_hosts` in docker-compose.yml) to this
-# container's own loopback, where the pair's auto-tunnel listens.
+# `host` is the one reserved alias, meaning "the machine Aegis itself runs on"
+# — host.docker.internal under the hood. It exists ONLY so the user never has
+# to type that Docker-internal name: allow add/remove/test accept the short
+# word and store the real name. For a database, generate-dbports.sh maps both
+# names to dbports, which reaches the host through host-gateway.
 _allow_resolve_host_alias() {
     # Writes the resolved name to stdout (the caller captures it with $(...)),
     # so the substitution note goes to stderr directly — never through log(),
@@ -3554,42 +3164,32 @@ _allow_resolve_host_alias() {
     printf '%s' "$1"
 }
 
-# T40.4 (D5): can a session actually reach this host? The window's own gate is
-# the LOADED allowlist (allowed_https_dst), so that file is the answer; the
-# custom store is consulted as well, because a host added moments ago whose
-# regenerate failed would otherwise draw a false warning. Exact host or a
-# leading-dot entry covering it — the match `cmd_allow_test` mirrors.
-_allow_has_host() {
-    local host="$1"
-    if [[ -f "$AEGIS_ALLOWLIST_FILE" ]] && awk -v h="$host" '
-        !/^[ \t]*#/ && NF {
-            e = $1
-            if (e == h) { found = 1; exit }
-            if (substr(e, 1, 1) == ".") {
-                bare = substr(e, 2)
-                if (h == bare) { found = 1; exit }
-                if (length(h) > length(bare) && substr(h, length(h) - length(bare)) == "." bare) { found = 1; exit }
-            }
-        }
-        END { exit found ? 0 : 1 }' "$AEGIS_ALLOWLIST_FILE"; then
-        return 0
-    fi
-    [[ -f "$AEGIS_ALLOWLIST_CUSTOM_FILE" ]] || return 1
-    node "$ALLOWLIST_JS" valid "$AEGIS_ALLOWLIST_CUSTOM_FILE" 2>/dev/null | grep -Fxq "$host"
+# The flags of the removed T40 pairs / T40.3 windows / T40.4 tunnel seeds.
+# Refused by name with the one replacement there is, never silently ignored.
+_allow_removed_flag() {
+    case "$1" in
+        --port) err "--port is only for a database now (port pairs and windows were removed): aegis allow add db <host> --port <n>" ;;
+        --to)   err "--to was removed with the port windows and their tunnels: aegis allow add db <host> --port <n>" ;;
+    esac
+    exit 2
 }
 
 cmd_allow_add() {
-    local domain="" reason="" for_duration="" allow_ip="no" port="" to=""
+    local db=0
+    if [[ "${1:-}" == "db" ]]; then
+        db=1
+        shift
+    fi
+    local domain="" reason="" for_duration="" allow_ip="no" port=""
     local seen=0 received=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --reason) [[ -n "${2:-}" ]] || { err "--reason needs a value"; exit 2; }; reason="$2"; shift 2 ;;
             --for)    [[ -n "${2:-}" ]] || { err "--for needs a value: 30m, 2h, 7d"; exit 2; }; for_duration="$2"; shift 2 ;;
             --ip)     allow_ip="yes"; shift ;;
-            --port)   [[ -n "${2:-}" ]] || { err "--port needs a number: 1..65535"; exit 2; }; port="$2"; shift 2 ;;
-            # T40.4: the window's tunnel seed. An empty value is the same mistake
-            # as an absent one, and --to without a window is refused below.
-            --to)     [[ -n "${2:-}" ]] || { err "--to needs the host the auto-tunnel will dial (a hostname or IPv4)"; exit 2; }; to="$2"; shift 2 ;;
+            --port)   [[ "$db" -eq 1 ]] || _allow_removed_flag --port
+                      [[ -n "${2:-}" ]] || { err "--port needs a number: 1..65535"; exit 2; }; port="$2"; shift 2 ;;
+            --to)     _allow_removed_flag --to ;;
             -*)       err "unknown option for 'aegis allow add': $1"; exit 2 ;;
             *)        seen=$((seen + 1)); received="${received}${received:+ }$1"
                       [[ -n "$domain" ]] || domain="$1"
@@ -3598,185 +3198,87 @@ cmd_allow_add() {
     done
     allow_one_value "domain" "$seen" "$received"
     [[ -n "$domain" ]] && domain="$(_allow_resolve_host_alias "$domain")"
-    # T40.4 (D1): --to belongs to a port window and to nothing else. Without
-    # --port there is no window to bind the tunnel to, and the pair shape the
-    # flag might have meant is no longer creatable — so refuse, never guess.
-    if [[ -n "$to" && -z "$port" ]]; then
-        err "--to solo tiene sentido en una ventana de puerto: aegis allow add --port <n> --for 30m|2h|7d --to $to"
-        err "sin --port no hay ventana que tunelizar (un destino pelado se agrega con: aegis allow add $to)"
-        exit 2
-    fi
-    # The same shape the store repeats on its side (two-line rule, like --port):
-    # one dialable host, nothing that would survive into the exec -d line.
-    if [[ -n "$to" ]] && [[ ! "$to" =~ ^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?$ ]]; then
-        err "--to needs a bare hostname or IPv4 literal (no wildcard, no space, no port, no path, no IPv6): $to"
-        exit 2
-    fi
-    # T40.3: the host-less shape is a PORT WINDOW — --port says so, and only
-    # --port says so. Without either it stays the old usage error. --for is
-    # REQUIRED here (the store repeats it): a global window that never expires
-    # is exactly what the perimeter cannot carry.
-    if [[ -z "$domain" && -z "$port" ]]; then
-        err "usage: aegis allow add <domain> [--reason \"...\"] [--for 30m|2h|7d] [--ip]"
-        err "       aegis allow add <domain> --port <n> [--reason \"...\"]   (permanent pair: CONNECT to that host:port only)"
-        err "       aegis allow add --port <n> --for 30m|2h|7d [--to <host>] [--reason \"...\"]   (port window; --to seeds its auto-tunnel)"
-        exit 2
-    fi
-    if [[ -z "$domain" && -z "$for_duration" ]]; then
-        err "a port window without --for is refused: global windows are temporary by design (--for 30m|2h|7d)"
-        exit 2
-    fi
-    # T40 first line of the port check (the store repeats it, like the domain).
-    # The fixed rules already open these ports: re-asking for one would only
-    # duplicate a grant under a second mechanism, so it is refused.
-    if [[ -n "$port" ]]; then
-        if [[ ! "$port" =~ ^[0-9]+$ ]] || (( port < 1 || port > 65535 )); then
+
+    if [[ "$db" -eq 1 ]]; then
+        if [[ -z "$domain" || -z "$port" ]]; then
+            err "usage: aegis allow add db <host> --port <n> [--reason \"...\"]   (host and port are both required)"
+            exit 2
+        fi
+        if [[ ! "$port" =~ ^[0-9]+$ ]] || (( 10#$port < 1 || 10#$port > 65535 )); then
             err "--port takes a number 1..65535, not \"$port\""
             exit 2
         fi
-        case "$port" in
-            443|80|22|2022)
-                err "port $port is already covered by the fixed rules (443, 80, 22, 2022) — add the host without --port"
-                exit 2 ;;
-        esac
+        if [[ -n "$for_duration" || "$allow_ip" == "yes" ]]; then
+            err "a database entry takes only <host> --port <n> [--reason \"...\"] (no --for, no --ip)"
+            exit 2
+        fi
+        cmd_allow_need_node || return 1
+        if ! node "$ALLOWLIST_JS" add "$AEGIS_ALLOWLIST_CUSTOM_FILE" "$domain" "$reason" "" "" "$port" db; then
+            err "nothing was written."
+            return 1
+        fi
+        log "dbports: $domain:$port — applications inside Aegis reach it by its real name; any other database stays unreachable."
+        _allow_apply_extra_hosts
+        return 0
     fi
-    # The pair shape `add <domain> --port <n>` (T40) was RETRACTED on 2026-10-13
-    # and RESTORED on 2026-10-24 (egress-persistent-pairs): a domain+port pair
-    # is a PERMANENT, SCOPED grant — CONNECT to that exact (host, port), never
-    # the whole allowlist like a host-less window. The engine (aegis-allowlist.js)
-    # never actually dropped pair support; only this CLI guard blocked creation.
-    if [[ -n "$domain" && -n "$port" ]]; then
-        if [[ -n "$to" ]]; then
-            err "--to no aplica a un par con dominio: $domain ya ES el destino del túnel."
-            err "       aegis allow add $domain --port $port"
-            exit 2
-        fi
-        if [[ -n "$for_duration" ]]; then
-            err "un par con dominio no vence: ya está acotado a $domain:$port, a diferencia de una ventana global."
-            err "       aegis allow add $domain --port $port"
-            exit 2
-        fi
+
+    if [[ -z "$domain" ]]; then
+        cmd_allow_usage
+        exit 2
     fi
     cmd_allow_need_node || return 1
 
-    # T40.3 warn (informational, not a confirmation): the point of a window is
-    # breadth, so say out loud how broad it is before writing it. T40.4 adds the
-    # seed: the port is still open for every listed host, and one of them now
-    # also gets a tunnel on every session start.
-    if [[ -z "$domain" ]]; then
-        if [[ -n "$to" ]]; then
-            log "ventana de puerto :$port con destino $to — el puerto se habilita para TODOS los hosts de la allowlist durante $for_duration, y cada sesión abrirá un túnel localhost:$port -> $to:$port"
-        else
-            log "ventana de puerto :$port — habilita ese puerto para TODOS los hosts de la allowlist durante $for_duration; para alcanzar un destino puntual desde clientes sin proxy: aegis shell <ruta> --tunnel <host>:$port (o agrega --to <host> a esta ventana)"
-        fi
-    elif [[ -n "$port" ]]; then
-        log "par permanente $domain:$port — CONNECT solo a ese destino (no ensancha el resto de la allowlist); cada sesión abrirá el túnel local."
-    fi
-    # T40.4 (D5): the gate of a window is the loaded allowlist (allowed_https_dst),
-    # so a --to that is not in it means the auto-tunnel's own CONNECT is the one
-    # draw that earns a 403. Said as a warning with the command that would fix
-    # it — this NEVER auto-adds: widening the destination list is its own act.
-    if [[ -n "$to" ]] && ! _allow_has_host "$to"; then
-        local to_ip_flag=""
-        [[ "$to" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] && to_ip_flag=" --ip"
-        err "WARNING: $to no está en la allowlist cargada — la ventana abre el puerto :$port, pero el túnel automático hacia $to irá a 403."
-        err "si de verdad quieres salir hacia ahí, decláralo: aegis allow add $to$to_ip_flag (esto no lo agrega por ti)."
-    fi
-
     if [[ -f "$AEGIS_ALLOWLIST_CUSTOM_FILE" ]]; then
-        local already want="$domain"
-        [[ -n "$port" ]] && want="$domain:$port"
-        # detail labels a window's first column `:<port> [window]` — match it.
-        [[ -z "$domain" ]] && want="$domain:$port [window]"
+        local already
         already="$(node "$ALLOWLIST_JS" detail "$AEGIS_ALLOWLIST_CUSTOM_FILE" 2>/dev/null |
-            awk -F'\t' -v d="$want" '$1 == d { print $2 }')"
+            awk -F'\t' -v d="$domain" '$1 == d { print $2 }')"
         [[ -n "$already" ]] && log "it is already there (${already}): this REPLACES it."
     fi
 
-    if ! node "$ALLOWLIST_JS" add "$AEGIS_ALLOWLIST_CUSTOM_FILE" "$domain" "$reason" "$for_duration" "$allow_ip" "$port" "$to"; then
+    if ! node "$ALLOWLIST_JS" add "$AEGIS_ALLOWLIST_CUSTOM_FILE" "$domain" "$reason" "$for_duration" "$allow_ip"; then
         err "nothing was written."
         return 1
     fi
     cmd_allow_regenerate
-    # egress-persistent-pairs (T4): a NEW real-domain pair needs its own
-    # extra_hosts entry to resolve inside Aegis, and that can only take effect
-    # on a running session by recreating the container (see
-    # _allow_apply_extra_hosts) — everything else about a pair's auto-tunnel
-    # (T40.2, restored 2026-10-24) hooks into the session-start path in
-    # _exec_in_container instead, not here. A window never had a hint either
-    # (T40.3 decision 7: no host to tunnel to).
-    if [[ -n "$domain" && -n "$port" ]]; then
-        _allow_apply_extra_hosts
-    fi
 }
 
+# `remove <domain>` takes out every entry of that host; `remove <host> <n>`
+# only that database (the dbports sidecar stops forwarding it).
 cmd_allow_remove() {
     local domain="" port=""
     local seen=0 received=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --port) [[ -n "${2:-}" ]] || { err "--port needs a number: 1..65535"; exit 2; }; port="$2"; shift 2 ;;
+            --port) err "--port is gone from remove: a database is removed with: aegis allow remove <host> <n>"; exit 2 ;;
             -*)     err "unknown option for 'aegis allow remove': $1"; exit 2 ;;
             *)      seen=$((seen + 1)); received="${received}${received:+ }$1"
-                    [[ -n "$domain" ]] || domain="$1"
+                    if [[ -z "$domain" ]]; then domain="$1"; elif [[ -z "$port" ]]; then port="$1"; fi
                     shift ;;
         esac
     done
-    allow_one_value "domain" "$seen" "$received"
-    [[ -n "$domain" ]] && domain="$(_allow_resolve_host_alias "$domain")"
-    if [[ -z "$domain" && -z "$port" ]]; then
+    if [[ "$seen" -gt 2 ]]; then
+        allow_one_value "domain" "$seen" "$received"
+    fi
+    if [[ -z "$domain" ]]; then
         err "usage: aegis allow remove <domain>"
-        err "       aegis allow remove --port <n>   (T40.3: take that port window back out)"
+        err "       aegis allow remove <host> <n>   (take that database back out)"
         exit 2
     fi
-    # The two shapes are deliberately exclusive: <domain> is the T27/T40 "all
-    # of this host" (pairs included) and --port alone is the T40.3 window.
-    # Naming them together could only guess which one was meant.
-    if [[ -n "$domain" && -n "$port" ]]; then
-        err "aegis allow remove: <domain> already takes out every entry of that host (its pairs too)"
-        err "use 'remove <domain>' for a host or 'remove --port <n>' for a port window, not both"
+    if [[ -n "$port" ]] && { [[ ! "$port" =~ ^[0-9]+$ ]] || (( 10#$port < 1 || 10#$port > 65535 )); }; then
+        err "expected one domain, or a database host and its port (1..65535); got: $received"
         exit 2
     fi
+    domain="$(_allow_resolve_host_alias "$domain")"
     cmd_allow_need_node || return 1
     if [[ ! -f "$AEGIS_ALLOWLIST_CUSTOM_FILE" ]]; then
         err "there are no entries of your own yet ($(tildify "$AEGIS_ALLOWLIST_CUSTOM_FILE") does not exist)."
         return 1
     fi
-    if [[ -z "$domain" ]]; then
-        # T40.3: the store matches port + window:true only — pairs and plain
-        # entries of any host survive. No session hint: a tunnel is only ever
-        # started explicitly by --tunnel at session start (the auto-tunnels
-        # were retracted 2026-10-13) and a window has no host for one
-        # (decision 7), so the reload above is the whole story.
-        if ! node "$ALLOWLIST_JS" remove "$AEGIS_ALLOWLIST_CUSTOM_FILE" "" "$port"; then
-            return 1
-        fi
-        cmd_allow_regenerate
-        return 0
-    fi
-    # T40.2: is the domain also carrying PAIR entries? The store's `remove`
-    # takes the whole domain (T27 semantics when no port is given), so this is
-    # read BEFORE the deletion — afterwards there is nothing to ask.
-    local had_port=0
-    if node "$ALLOWLIST_JS" detail "$AEGIS_ALLOWLIST_CUSTOM_FILE" 2>/dev/null | awk -F'\t' -v d="$domain" '
-        { p = substr($1, length(d) + 2)
-          if (substr($1, 1, length(d) + 1) == d ":" && p ~ /^[0-9]+$/) { found = 1; exit } }
-        END { exit found ? 0 : 1 }'; then
-        had_port=1
-    fi
-    if ! node "$ALLOWLIST_JS" remove "$AEGIS_ALLOWLIST_CUSTOM_FILE" "$domain"; then
+    if ! node "$ALLOWLIST_JS" remove "$AEGIS_ALLOWLIST_CUSTOM_FILE" "$domain" ${port:+"$port"}; then
         return 1
     fi
     cmd_allow_regenerate
-    # T40.2 hint, remove-shaped (the converse of add's): open sessions still
-    # hold the tunnels they started with — a rule removed here does not reach
-    # them, and the proxy will start refusing only new connections.
-    if [[ "$had_port" == "1" ]]; then
-        is_up && log "sesiones abiertas no ven este cambio — reavísalas: los túneles de las reglas removidas viven hasta que se cierren."
-        # egress-persistent-pairs (T4): drop the stale extra_hosts entry too,
-        # if this domain had one — see _allow_apply_extra_hosts.
-        _allow_apply_extra_hosts
-    fi
+    _allow_apply_extra_hosts
 }
 
 cmd_allow_list() {
@@ -3795,49 +3297,40 @@ cmd_allow_list() {
     log "your own entries: $(tildify "$AEGIS_ALLOWLIST_CUSTOM_FILE")"
     echo
 
-    local own fixed
+    local own fixed detail=""
     own="$(awk -F'\t' '$2 == "own" { print $1 }' "$origins")"
     fixed="$(awk -F'\t' '$2 != "own" { print $1 "\t" $2 }' "$origins")"
-
-    # T40.3: the sidecar names a window `:<port>` (origin only). The store's
-    # `windows` verb carries the expiry, computed once for the whole list.
-    local ownwindows=""
     if [[ -f "$AEGIS_ALLOWLIST_CUSTOM_FILE" ]] && command -v node >/dev/null 2>&1 && [[ -f "$ALLOWLIST_JS" ]]; then
-        ownwindows="$(node "$ALLOWLIST_JS" windows "$AEGIS_ALLOWLIST_CUSTOM_FILE" 2>/dev/null || true)"
+        detail="$(node "$ALLOWLIST_JS" detail "$AEGIS_ALLOWLIST_CUSTOM_FILE" 2>/dev/null || true)"
     fi
 
     if [[ -n "$own" ]]; then
         log "yours:"
         while IFS= read -r d; do
             [[ -n "$d" ]] || continue
-            if [[ "$d" == :* ]]; then
-                local wexp="" wto=""
-                if [[ -n "$ownwindows" ]]; then
-                    wexp="$(printf '%s\n' "$ownwindows" | awk -F'\t' -v p="${d#:}" '$1 == p { print $2; exit }')"
-                    wto="$(printf '%s\n' "$ownwindows" | awk -F'\t' -v p="${d#:}" '$1 == p && NF >= 3 { print $3; exit }')"
-                fi
-                # Empty wexp here means the generated sidecar still shows a window
-                # the store no longer considers live: it dies at the next
-                # regenerate (honest limit of in-place generation).
-                # T40.4 (D6): a window carrying a seed says what it now opens —
-                # the tunnel every session will start at its localhost port.
-                if [[ -n "$wto" ]]; then
-                    printf '  %-36s %s\n' "$d [window]" "tunel -> $wto vence ${wexp:-<vencida: muere al próximo regenerate>}"
-                else
-                    printf '  %-36s %s\n' "$d" "ventana hasta ${wexp:-<vencida: muere al próximo regenerate>}"
-                fi
-                continue
-            fi
             local extra=""
-            if [[ -f "$AEGIS_ALLOWLIST_CUSTOM_FILE" ]] && command -v node >/dev/null 2>&1 && [[ -f "$ALLOWLIST_JS" ]]; then
-                extra="$(node "$ALLOWLIST_JS" detail "$AEGIS_ALLOWLIST_CUSTOM_FILE" 2>/dev/null |
-                    awk -F'\t' -v d="$d" '$1 == d { printf "%s%s%s%s", $2, ($3 ? " — " $3 : ""), ($4 ? " (" $4 ")" : ""), ($5 ? " expires " $5 : "") }')"
-            fi
+            extra="$(printf '%s\n' "$detail" |
+                awk -F'\t' -v d="$d" '$1 == d { printf "%s%s%s%s", $2, ($3 ? " — " $3 : ""), ($4 ? " (" $4 ")" : ""), ($5 ? " expires " $5 : "") }')"
             printf '  %-36s %s\n' "$d" "${extra:-active}"
         done <<<"$own"
         echo
     else
         log "yours: (none — they go in $(tildify "$AEGIS_ALLOWLIST_CUSTOM_FILE"))"
+        echo
+    fi
+
+    local dbs
+    dbs="$(printf '%s\n' "$detail" | awk -F'\t' '$1 ~ / \[db\]$/ { printf "  %-36s %s%s\n", substr($1, 1, length($1) - 5), $2, ($3 ? " — " $3 : "") }')"
+    if [[ -n "$dbs" ]]; then
+        log "databases (dbports):"
+        printf '%s\n' "$dbs"
+        echo
+    fi
+    local legacy
+    legacy="$(printf '%s\n' "$detail" | awk -F'\t' '$2 ~ /^ignored/ { printf "  %-36s %s\n", $1, $2 }')"
+    if [[ -n "$legacy" ]]; then
+        log "ignored (legacy port entries — never opened; take them out with 'aegis allow remove <host>'):"
+        printf '%s\n' "$legacy"
         echo
     fi
 
@@ -4497,13 +3990,45 @@ vault_state() {
 # One prompt per operation. The answer goes to VAULT_PASS (shell memory only)
 # and stays for the rest of the operation (a session injection reads several
 # files but asks once); clear it when the operation ends.
+#
+# The HOST-KEYRING CACHE (vault-passphrase-cache): before prompting, the cache
+# is consulted (aegis-vault-cache.js `read`) — a passphrase stored by an
+# earlier prompt (sealed in the host keyring through aegis-secret-protect's
+# tiers, TTL-bounded) answers here without a prompt, so ONE passphrase serves
+# keys/, secrets and backups and is typed once per TTL window. A prompt that
+# succeeds STORES into the cache (best-effort: with no secure tier the helper
+# refuses and the per-operation prompt stays — never a plaintext passphrase on
+# disk). AEGIS_VAULT_CACHE=off disables read+store (the pre-cache behavior);
+# `aegis vault forget` clears the cache now.
+VAULT_CACHE_JS="${AEGIS_LAUNCHER_DIR:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)}/aegis-vault-cache.js"
+
+vault_cache_read() {
+    [[ "${AEGIS_VAULT_CACHE:-}" == off ]] && return 1
+    [[ -f "$VAULT_CACHE_JS" ]] && command -v node >/dev/null 2>&1 || return 1
+    local pass
+    pass="$(node "$VAULT_CACHE_JS" read 2>/dev/null)" || return 1
+    [[ -n "$pass" ]] || return 1
+    VAULT_PASS="$pass"
+    return 0
+}
+
+vault_cache_store() {
+    [[ "${AEGIS_VAULT_CACHE:-}" == off ]] && return 0
+    [[ -f "$VAULT_CACHE_JS" ]] && command -v node >/dev/null 2>&1 || return 0
+    [[ -n "${VAULT_PASS:-}" ]] || return 0
+    printf '%s\n' "$VAULT_PASS" | node "$VAULT_CACHE_JS" store 2>/dev/null && return 0
+    return 0 # best-effort: no tier / refusal means the prompt stays, never a plaintext fallback
+}
+
 vault_prompt_pass() {
+    vault_cache_read && return 0
     local pass=""
     printf 'aegis: vault passphrase: ' >&2
     IFS= read -rs pass || { echo >&2; return 1; }
     echo >&2
     [[ -n "$pass" ]] || { err "empty passphrase: refused."; return 1; }
     VAULT_PASS="$pass"
+    vault_cache_store
 }
 
 # One hidden line, terminal-first (T39.1), MASKED (T39.2, vault-seal-windows).
@@ -4571,6 +4096,16 @@ vault_read_hidden_line() {
 # For WRITES: typed twice. A typo while sealing means the secret is locked out
 # of the very protection it bought, so there is no one-shot path into `put`.
 vault_prompt_pass_seal() {
+    # The new+repeat flow is for the FIRST seal of an empty vault only. When any
+    # sealed key already exists, the vault HAS a passphrase — asking for a "new"
+    # one would (a) make every put/edit/host-set feel like a re-keying ritual and
+    # (b) let a typo'd second passphrase seal one secret against a keyring the
+    # other secrets can't open (silent fork). Existing vault: ONE prompt (or the
+    # keyring cache) via vault_prompt_pass, same as every read path.
+    if vault_any_sealed_all; then
+        vault_prompt_pass
+        return
+    fi
     local pass="" again=""
     printf 'aegis: new vault passphrase for keys/%s: ' "$1" >&2
     vault_read_hidden_line pass || { echo >&2; return 1; }
@@ -4581,6 +4116,20 @@ vault_prompt_pass_seal() {
     [[ -n "$pass" ]] || { err "empty passphrase: nothing was written."; return 1; }
     [[ "$pass" == "$again" ]] || { err "the two VAULT passphrase entries did not match: nothing was written (the secret value was not the problem — run the command again)."; return 1; }
     VAULT_PASS="$pass"
+}
+
+# Whether ANY sealed key exists in the vault (all of keys/, not just the named
+# files — the vault's passphrase is one for the whole keyring). No docker at all
+# (volume missing) means empty: the first seal legitimately defines it.
+vault_any_sealed_all() {
+    vault_run ro sh -c '
+        [ -d /vault/keys ] || exit 1
+        for f in /vault/keys/*; do
+            [ -f "$f" ] || continue
+            [ "$(head -c 8 "$f" 2>/dev/null)" = "U2FsdGVk" ] && exit 0
+        done
+        exit 1
+    ' sh
 }
 
 vault_have_ssl() {
@@ -4908,6 +4457,16 @@ session_inject_secret() {
     local id="id_$(printf '%s' "$name" | tr '/.' '__')"
     local host hostname known port user
     host="$(vault_read_optional "${name}.host")"
+    # Since aegis ssh, an SSH port opens only for a server registered with it.
+    # A key sealed before that (or never registered) still injects, but the
+    # proxy refuses its connection: say so instead of letting ssh fail later.
+    if [[ -n "$host" ]] && command -v node >/dev/null 2>&1 && [[ -f "$ALLOWLIST_JS" ]]; then
+        if ! node "$ALLOWLIST_JS" sshs "$AEGIS_ALLOWLIST_CUSTOM_FILE" 2>/dev/null |
+            awk -F'\t' -v n="$name" '$3 == n { found = 1 } END { exit !found }'; then
+            err "WARNING: ${name} has no SSH port open — the proxy will refuse ${host}."
+            err "register it once with: aegis ssh set ${name} --host ${host} [--port <p>]"
+        fi
+    fi
     # keys/<name>.hostname is OPTIONAL and it is what makes host aliases work: with
     # several accounts on the same real server (two GitHub identities, say), each has
     # its own alias (`Host github.com-personal`) and this is where ssh actually
@@ -5267,6 +4826,20 @@ secret_kind_resolve() {
     printf '%s\n' "${ns}${name}"
 }
 
+# SSH keys have ONE owner since aegis-ssh S6: `aegis ssh`. The git-ssh and
+# server kinds are refused by `secret put` (flag, menu and implied namespace),
+# pointing at the command that replaces them. Existing keys keep working.
+secret_kind_not_ssh() {
+    case "$1" in
+        git-ssh|server)
+            err "SSH keys are no longer sealed with 'aegis secret put' (kind '${1}' moved to 'aegis ssh'):"
+            err "  create one:   aegis ssh new <name> --host <host> [--port <p>] [--user <u>] [--type ed25519|rsa]"
+            err "  bring yours:  aegis ssh import <name> --from <private-key-file> --host <host>"
+            return 1 ;;
+    esac
+    return 0
+}
+
 # secret_kind_ask <outvar> <name> — the interactive "what are you saving?"
 # menu (operator request: the CLI asks what it is sealing). Reads stdin like
 # vault_confirm; NOT usable on the --stdin path (that one must pass --kind).
@@ -5274,8 +4847,8 @@ secret_kind_ask() {
     local __var="$1" name="$2" answer
     cat >&2 <<'KINDMENU'
 aegis: what are you sealing?
-  1) git-ssh   a git SSH key
-  2) server    an SSH server key (+ host/port sidecars via 'secret host set')
+  1) git-ssh   moved: SSH keys are made with 'aegis ssh new|import'
+  2) server    moved: SSH keys are made with 'aegis ssh new|import'
   3) env       a project .env (KEY=VALUE lines)
   4) token     one line VAR=value (a PAT / API token)
 aegis: kind [1-4]:
@@ -5368,7 +4941,7 @@ cmd_secret_put() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --from) [[ -n "${2:-}" ]] || { err "--from requires a file"; exit 2; }; from="$2"; shift 2 ;;
-            --kind) [[ -n "${2:-}" ]] || { err "--kind requires a value (git-ssh|server|env|token)"; exit 2; }; kind="$2"; shift 2 ;;
+            --kind) [[ -n "${2:-}" ]] || { err "--kind requires a value (env|token)"; exit 2; }; kind="$2"; shift 2 ;;
             --stdin) piped=1; shift ;;
             --prompt) promptmode=1; shift ;;
             --var) [[ -n "${2:-}" ]] || { err "--var requires a variable name"; exit 2; }; varname="$2"; shift 2 ;;
@@ -5406,7 +4979,7 @@ cmd_secret_put() {
     # secret, so it REQUIRES --kind. Content is validated per kind before any
     # passphrase prompt: a wrong-typed secret never reaches the seal.
     if [[ "$piped" -eq 1 && -z "$kind" ]]; then
-        err "--stdin carries the secret — the CLI cannot ask what it is: pass --kind <git-ssh|server|env|token>."
+        err "--stdin carries the secret — the CLI cannot ask what it is: pass --kind <env|token>."
         exit 2
     fi
     local pre_kind
@@ -5420,6 +4993,7 @@ cmd_secret_put() {
             *) secret_kind_ask kind "$name" || exit 2 ;;
         esac
     fi
+    secret_kind_not_ssh "$kind" || exit 2
     name="$(secret_kind_resolve "$kind" "$name")" || exit $?
     case "$pre_kind" in
         legacy-*) log "keys/${name} uses a legacy namespace — 'aegis secret migrate-kinds' moves it to the typed one." ;;
@@ -5439,7 +5013,7 @@ cmd_secret_put() {
         # multi-line and belongs to --from.
         [[ "$kind" == "token" ]] || {
             err "put --prompt seals ONE-LINE token secrets (VAR=value)."
-            err "for git-ssh, server or env (multi-line), seal from a host file: aegis secret put ${name} --kind <k> --from <file>."
+            err "for env (multi-line), seal from a host file: aegis secret put ${name} --kind env --from <file>."
             exit 2
         }
         if [[ -z "$varname" ]]; then
@@ -5633,82 +5207,43 @@ cmd_secret_edit() {
     log "keys/${name} updated (sealed)."
 }
 
+# `aegis secret host set` moved to `aegis ssh set` (single owner of SSH, S6).
 cmd_secret_host_set() {
-    local name="" host="" hostname="" user="" port="" khfile=""
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            --host) [[ -n "${2:-}" ]] || { err "--host requires a value"; exit 2; }; host="$2"; shift 2 ;;
-            --hostname) [[ -n "${2:-}" ]] || { err "--hostname requires a value"; exit 2; }; hostname="$2"; shift 2 ;;
-            --user) [[ -n "${2:-}" ]] || { err "--user requires a value"; exit 2; }; user="$2"; shift 2 ;;
-            --port) [[ -n "${2:-}" ]] || { err "--port requires a value"; exit 2; }; port="$2"; shift 2 ;;
-            --known-hosts-from) [[ -n "${2:-}" ]] || { err "--known-hosts-from requires a file"; exit 2; }; khfile="$2"; shift 2 ;;
-            -*) err "unknown option for 'aegis secret host set': $1"; exit 2 ;;
-            *) name="$1"; shift ;;
-        esac
-    done
-    vault_require_name "$name" "aegis secret host set <name> [--host H] [--hostname H] [--user U] [--port P] [--known-hosts-from FILE]"
-    if [[ -z "$host$hostname$user$port$khfile" ]]; then
-        err "usage: aegis secret host set <name> [--host H] [--hostname H] [--user U] [--port P] [--known-hosts-from FILE]"
-        err "nothing to write: pass at least one field."
-        exit 2
-    fi
-    if [[ -n "$port" && ! "$port" =~ ^[0-9]+$ ]]; then
-        err "--port must be a number (aegis shell reads it as the ssh port); got '${port}'."
-        exit 2
-    fi
-    if [[ -n "$khfile" && ! -f "$khfile" ]]; then
-        err "no such file: ${khfile}"
-        exit 1
-    fi
-    # Sidecars describe a key; without the main entry there is nothing for
-    # them to attach to. enc or plain both count: sealing a sidecar for a
-    # not-yet-migrated legacy key is exactly right.
-    case "$(vault_state "$name")" in
-        enc|plain) ;;
-        *)
-            err "no such secret: keys/${name}  (see: aegis secret list)"
-            err "write the key first — aegis secret put ${name} --from <host-file> — then its sidecars."
-            exit 2
-            ;;
-    esac
+    err "'aegis secret host set' was removed: SSH servers are registered with 'aegis ssh'."
+    err "  aegis ssh set <name> [--host H] [--user U] [--port P] [--known-hosts-from FILE]"
+    err "  (see: aegis ssh help)"
+    exit 2
+}
 
-    vault_prompt_pass_seal "$name" || exit 1
-
-    # Fixed order (session_inject_secret's convention): .host .hostname
-    # .user .port .known_hosts. Atomicity is PER FILE (decision 6): each
-    # field is a full verify-before-replace seal on its own, there is NO
-    # transaction across files — a later failure leaves the earlier fields
-    # sealed, says so, and a re-run of the remaining flags is idempotent.
-    local -a sidecars=() sources=() sealed=() side src
-    local i rc=0
-    [[ -n "$host" ]] && { sidecars+=("${name}.host"); sources+=("$host"); }
-    [[ -n "$hostname" ]] && { sidecars+=("${name}.hostname"); sources+=("$hostname"); }
-    [[ -n "$user" ]] && { sidecars+=("${name}.user"); sources+=("$user"); }
-    [[ -n "$port" ]] && { sidecars+=("${name}.port"); sources+=("$port"); }
-    [[ -n "$khfile" ]] && { sidecars+=("${name}.known_hosts"); sources+=("$khfile"); }
+# secret_sidecars_seal <name> <host> <hostname> <user> <port> <known_hosts> [<pub>]
+# — seals the sidecars of keys/<name> that have a non-empty value, in
+# session_inject_secret's fixed order (.host .hostname .user .port .known_hosts,
+# then .pub). VAULT_PASS must already be prepared by the caller (one prompt per
+# operation). known_hosts and pub travel as CONTENT, piped into the seal — never
+# a new clear-text host file. Atomicity is PER FILE: there is no transaction
+# across files; a failure says what was already sealed and returns 1.
+secret_sidecars_seal() {
+    local name="$1"
+    local -a sidecars=() values=() sealed=()
+    [[ -n "$2" ]] && { sidecars+=("${name}.host"); values+=("$2"); }
+    [[ -n "$3" ]] && { sidecars+=("${name}.hostname"); values+=("$3"); }
+    [[ -n "$4" ]] && { sidecars+=("${name}.user"); values+=("$4"); }
+    [[ -n "$5" ]] && { sidecars+=("${name}.port"); values+=("$5"); }
+    [[ -n "$6" ]] && { sidecars+=("${name}.known_hosts"); values+=("$6"); }
+    [[ -n "${7:-}" ]] && { sidecars+=("${name}.pub"); values+=("$7"); }
+    local i side
     for i in "${!sidecars[@]}"; do
-        side="${sidecars[$i]}"; src="${sources[$i]}"
-        if vault_run ro sh -c '[ -e "/vault/keys/$1" ] && echo yes || echo no' sh "$side" | grep -q yes; then
-            log "keys/${side} already exists: this REPLACES its content."
-        fi
-        if [[ "$side" == "${name}.known_hosts" ]]; then
-            vault_seal_stdin "$side" < "$src" || rc=$?
-        else
-            printf '%s\n' "$src" | vault_seal_stdin "$side" || rc=$?
-        fi
-        if [[ "$rc" -ne 0 ]]; then
-            VAULT_PASS=""
+        side="${sidecars[$i]}"
+        if ! printf '%s\n' "${values[$i]}" | vault_seal_stdin "$side" >/dev/null; then
             err "keys/${side} was not written: sealing stopped at this field."
             if [[ "${#sealed[@]}" -gt 0 ]]; then
                 err "already sealed by this command: ${sealed[*]} (each field is atomic on its own; there is no rollback across files)."
             fi
-            err "re-run 'aegis secret host set ${name} ...' with only the remaining fields — replacing what already went through is harmless."
-            exit 1
+            return 1
         fi
         sealed+=("$side")
     done
-    VAULT_PASS=""
-    log "sidecars of keys/${name} sealed: ${sealed[*]}"
+    [[ "${#sealed[@]}" -eq 0 ]] || log "sidecars of keys/${name} sealed: ${sealed[*]}"
 }
 
 # The one operation with no undo: the vault is not part of `aegis backup` yet, so
@@ -5801,6 +5336,451 @@ aegis: a second `aegis secret migrate-kinds` is a no-op.
 EOF
 }
 
+# --- aegis ssh: Aegis creates and owns SSH credentials ------------------------
+#
+# ONE owner for SSH (odd/tasks/aegis-ssh.md): `aegis ssh new` generates the key
+# on the host, seals the private key and its sidecars in the vault, registers the
+# server's (host, port) so the egress proxy opens exactly that SSH port, and
+# prints ONLY the public key — the line to send to whoever runs the server.
+#
+#   keys/<name>              the private key (sealed; never printed)
+#   keys/<name>.host .user .port .known_hosts
+#                            what session_inject_secret writes into a session's
+#                            ssh config (`aegis shell --secret <name>`)
+#   keys/<name>.pub          the public key, so `aegis ssh show` can print it again
+#
+# A bare name is stored under server/ (the kind --secret accepts); a name that
+# already carries an SSH namespace (server/, git-ssh/, legacy ssh/ servers/)
+# keeps it. The port is opened per server in ~/.aegis/allowlist.custom.json
+# (`ssh: true` entries, one per key) and generated into squid's aegis-ssh.conf.
+#
+# Host keys are deny-by-default: the server's key is fetched with ssh-keyscan
+# from the host, its fingerprints are shown, and nothing is sealed until the
+# owner answers y. --known-hosts-from <file> uses a host key obtained out of
+# band instead. No answer (a script, EOF) means no: the command refuses.
+# ---------------------------------------------------------------------------
+SSH_KEY_SIDECARS=(host hostname user port known_hosts pub)
+
+cmd_ssh_help() {
+    cat <<'EOF'
+aegis ssh — SSH keys and servers, created and owned by Aegis
+
+Usage: aegis ssh <subcommand> [options]
+
+Subcommands:
+  aegis ssh new <name> --host <host> [--port <p>] [--user <u>] [--type ed25519|rsa]
+                                   Generate a key (ed25519 by default; rsa = 4096 bits),
+                                   confirm the server's host key, seal everything in the
+                                   vault, open that server's SSH port, and print ONLY the
+                                   public key — the line you send to the server's owner
+  aegis ssh import <name> --from <private-key-file> --host <host> [--port <p>] [--user <u>]
+                                   The same, for a key you already have (unencrypted)
+  aegis ssh list                   SSH keys in the vault and the server port each one opens
+  aegis ssh show <name>            Print the public key again
+  aegis ssh set <name> [--host <h>] [--user <u>] [--port <p>] [--known-hosts-from <file>]
+                                   Change where a key connects (a new host or port asks
+                                   for the host key again); also opens the port of a key
+                                   created before 'aegis ssh'
+  aegis ssh rm <name>              Remove the key, its sidecars, and close its port
+
+Options:
+  --host <host>                    The server (a hostname or an IPv4 address)
+  --port <p>                       Its SSH port (default 22); only this port is opened
+  --user <u>                       The login user (a forge uses git)
+  --type ed25519|rsa               Key type for 'new' (rsa: 4096 bits, e.g. Azure)
+  --known-hosts-from <file>        Use this host key instead of fetching and confirming one
+
+Host keys are never trusted silently: the fingerprint is shown and the command
+seals nothing until you answer y. Without a confirmed host key the server is
+not usable. A bare <name> is stored as server/<name>; use it in a session with:
+  aegis shell --secret server/<name>
+Needs ssh-keygen and ssh-keyscan on the host (OpenSSH; Git for Windows ships them).
+EOF
+}
+
+cmd_ssh() {
+    local action="${1:-help}"
+    [[ $# -gt 0 ]] && shift || true
+    case "$action" in
+        new) cmd_ssh_new "$@" ;;
+        import) cmd_ssh_import "$@" ;;
+        list) cmd_ssh_list "$@" ;;
+        show) cmd_ssh_show "$@" ;;
+        set) cmd_ssh_set "$@" ;;
+        rm) cmd_ssh_rm "$@" ;;
+        help|-h|--help) cmd_ssh_help ;;
+        *)
+            err "unknown 'aegis ssh' subcommand: ${action}"
+            err "usage: aegis ssh new|import|list|show|set|rm ...  (see: aegis ssh help)"
+            exit 2
+            ;;
+    esac
+}
+
+# The host tools are explicit dependencies: say which one is missing.
+ssh_need_tools() {
+    local t
+    for t in "$@"; do
+        command -v "$t" >/dev/null 2>&1 || {
+            err "'${t}' was not found on this machine's PATH: 'aegis ssh' needs OpenSSH's ${t} on the host"
+            err "(Git for Windows and every Linux/macOS OpenSSH client ship it)."
+            exit 1
+        }
+    done
+}
+
+# ssh_vault_name <name> — the vault name for an SSH key (see the header).
+ssh_vault_name() {
+    local name="$1"
+    vault_require_name "$name" "aegis ssh <subcommand> <name>"
+    case "$name" in
+        git-ssh/*|server/*|ssh/*|servers/*) printf '%s\n' "$name" ;;
+        */*)
+            err "'${name}' carries a namespace that is not an SSH one: use a bare name (stored as server/<name>) or server/<...>."
+            exit 2 ;;
+        *) printf '%s\n' "server/${name}" ;;
+    esac
+}
+
+ssh_valid_port() {
+    [[ "$1" =~ ^[0-9]+$ ]] && (( 10#$1 >= 1 && 10#$1 <= 65535 )) || {
+        err "--port must be a number in 1..65535; got '${1}'."
+        exit 2
+    }
+}
+
+# ssh_check_server <host> <port> — the store's own validation, before anything
+# is generated, asked or sealed.
+ssh_check_server() {
+    cmd_allow_need_node || exit 1
+    node "$ALLOWLIST_JS" ssh-check "$AEGIS_ALLOWLIST_CUSTOM_FILE" "$1" "$2" || exit 2
+}
+
+# ssh_host_key <host> <port> <file-or-empty> — sets SSH_KNOWN_HOSTS. With a file:
+# that host key, as given. Without: ssh-keyscan from the host, fingerprints on
+# stderr, and an explicit y — anything else refuses (exit 2), nothing written.
+ssh_host_key() {
+    local host="$1" port="$2" file="$3" known fps answer
+    if [[ -n "$file" ]]; then
+        [[ -s "$file" ]] || { err "--known-hosts-from: no such file, or empty: ${file}"; exit 1; }
+        known="$(tr -d '\r' < "$file")"
+    else
+        ssh_need_tools ssh-keyscan
+        log "fetching the host key of ${host} (port ${port}) with ssh-keyscan..."
+        known="$(ssh-keyscan -T 10 -p "$port" "$host" 2>/dev/null | grep -v '^#' || true)"
+        [[ -n "$known" ]] || {
+            err "could not fetch a host key from ${host}:${port} — nothing was written."
+            err "if the server is only reachable from elsewhere, get its host key out of band and pass --known-hosts-from <file>."
+            exit 1
+        }
+    fi
+    ssh_need_tools ssh-keygen
+    fps="$(printf '%s\n' "$known" | ssh-keygen -lf - 2>/dev/null)" || fps=""
+    [[ -n "$fps" ]] || { err "that is not a known_hosts host key (ssh-keygen cannot read it) — nothing was written."; exit 1; }
+    log "host key fingerprints of ${host}:${port}:"
+    printf '%s\n' "$fps" | sed 's/^/    /'
+    if [[ -z "$file" ]]; then
+        printf 'aegis: compare them with the ones the server owner publishes. Trust this host key? [y/N] '
+        IFS= read -r answer || answer=""
+        case "$answer" in
+            y|Y|yes|YES) ;;
+            *)
+                err "host key NOT confirmed: nothing was written — without a confirmed host key the server is not usable."
+                err "confirm it interactively, or pass a host key you verified: --known-hosts-from <file>."
+                exit 2 ;;
+        esac
+    fi
+    SSH_KNOWN_HOSTS="$known"
+}
+
+# Regenerate the allowlist (and with it aegis-ssh.conf) and reload the proxy.
+ssh_apply_egress() {
+    mkdir -p "${BUILD_LOG_DIR%/}" 2>/dev/null || true
+    cmd_allow_regenerate || err "WARNING: the SSH port is registered but the proxy was not updated: run 'aegis allow reload'."
+}
+
+# ssh_seal_new <vault-name> <private-key-file> <host> <user> <port> <pub>
+# Seals the key, then its sidecars (known_hosts from SSH_KNOWN_HOSTS), then
+# registers the server port. One passphrase prompt for all of it.
+ssh_seal_new() {
+    local vname="$1" key="$2" host="$3" user="$4" port="$5" pub="$6" rc=0
+    vault_prompt_pass_seal "$vname" || return 1
+    vault_seal_stdin "$vname" < "$key" >/dev/null || rc=$?
+    if [[ "$rc" -eq 0 ]]; then
+        secret_sidecars_seal "$vname" "$host" "" "$user" "$port" "$SSH_KNOWN_HOSTS" "$pub" || rc=$?
+    fi
+    VAULT_PASS=""
+    [[ "$rc" -eq 0 ]] || return "$rc"
+    node "$ALLOWLIST_JS" ssh-set "$AEGIS_ALLOWLIST_CUSTOM_FILE" "$vname" "$host" "$port" >/dev/null || return 1
+    log "keys/${vname} sealed; ${host}:${port} is open for SSH. Use it with: aegis shell --secret ${vname}"
+}
+
+ssh_refuse_existing() {
+    case "$(vault_state "$1")" in
+        missing) ;;
+        dir) err "keys/${1} is a FOLDER in the vault: pick another name."; exit 1 ;;
+        *) err "keys/${1} already exists: change it with 'aegis ssh set', or remove it first with 'aegis ssh rm'."; exit 1 ;;
+    esac
+}
+
+# Parses the flags shared by new/import/set into SSH_OPT_* globals.
+ssh_parse_opts() {
+    local cmd="$1"
+    shift
+    SSH_OPT_NAME="" SSH_OPT_HOST="" SSH_OPT_PORT="" SSH_OPT_USER="" SSH_OPT_TYPE="" SSH_OPT_FROM="" SSH_OPT_KH=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --host|--port|--user|--type|--from|--known-hosts-from)
+                [[ -n "${2:-}" ]] || { err "$1 requires a value"; exit 2; }
+                case "$1" in
+                    --host) SSH_OPT_HOST="$2" ;;
+                    --port) SSH_OPT_PORT="$2" ;;
+                    --user) SSH_OPT_USER="$2" ;;
+                    --type) [[ "$cmd" == new ]] || { err "--type is only for 'aegis ssh new'"; exit 2; }; SSH_OPT_TYPE="$2" ;;
+                    --from) [[ "$cmd" == import ]] || { err "--from is only for 'aegis ssh import'"; exit 2; }; SSH_OPT_FROM="$2" ;;
+                    --known-hosts-from) SSH_OPT_KH="$2" ;;
+                esac
+                shift 2 ;;
+            -*) err "unknown option for 'aegis ssh ${cmd}': $1"; exit 2 ;;
+            *)
+                [[ -z "$SSH_OPT_NAME" ]] || { err "'aegis ssh ${cmd}' takes one name; got '${SSH_OPT_NAME}' and '$1'"; exit 2; }
+                SSH_OPT_NAME="$1"; shift ;;
+        esac
+    done
+    [[ -z "$SSH_OPT_PORT" ]] || ssh_valid_port "$SSH_OPT_PORT"
+}
+
+# new and import share everything after the key exists: the work runs with
+# stdout on stderr, and the public key is the ONLY thing printed on stdout.
+cmd_ssh_new() { _ssh_create new "$@" >&2; printf '%s\n' "$SSH_PUB"; }
+cmd_ssh_import() { _ssh_create import "$@" >&2; printf '%s\n' "$SSH_PUB"; }
+
+_ssh_create() {
+    local mode="$1"
+    shift
+    ssh_parse_opts "$mode" "$@"
+    local usage="aegis ssh new <name> --host <host> [--port <p>] [--user <u>] [--type ed25519|rsa]"
+    [[ "$mode" == import ]] && usage="aegis ssh import <name> --from <private-key-file> --host <host> [--port <p>] [--user <u>]"
+    if [[ -z "$SSH_OPT_NAME" || -z "$SSH_OPT_HOST" ]]; then
+        err "usage: ${usage}"
+        exit 2
+    fi
+    local type="${SSH_OPT_TYPE:-ed25519}"
+    case "$type" in ed25519|rsa) ;; *) err "--type must be ed25519 or rsa; got '${type}'."; exit 2 ;; esac
+    if [[ "$mode" == import && -z "$SSH_OPT_FROM" ]]; then err "usage: ${usage}"; exit 2; fi
+    local port="${SSH_OPT_PORT:-22}" vname
+    ssh_need_tools ssh-keygen
+    vname="$(ssh_vault_name "$SSH_OPT_NAME")" || exit $?
+    ssh_check_server "$SSH_OPT_HOST" "$port"
+    local from="$SSH_OPT_FROM"
+    if [[ -n "$from" ]] && command -v cygpath >/dev/null 2>&1; then from="$(cygpath -u "$from" 2>/dev/null || printf '%s' "$from")"; fi
+    if [[ "$mode" == import && ! -f "$from" ]]; then err "no such file: ${from}"; exit 1; fi
+    ssh_refuse_existing "$vname"
+    ssh_host_key "$SSH_OPT_HOST" "$port" "$SSH_OPT_KH"
+
+    # The private key exists on disk only here: a private (700) temp dir that is
+    # removed on every path out, success or failure.
+    local tmp rc=0
+    tmp="$(umask 077 && mktemp -d "${TMPDIR:-/tmp}/aegis-ssh.XXXXXX")" || { err "could not create a private temp dir"; exit 1; }
+    chmod 700 "$tmp"
+    if [[ "$mode" == new ]]; then
+        local -a bits=()
+        [[ "$type" == rsa ]] && bits=(-b 4096)
+        (umask 077 && ssh-keygen -q -t "$type" "${bits[@]}" -N '' -C "aegis-${SSH_OPT_NAME}" -f "${tmp}/id" </dev/null >/dev/null) || rc=$?
+        [[ "$rc" -eq 0 ]] || err "ssh-keygen could not generate the key."
+    else
+        (umask 077 && cp "$from" "${tmp}/id" && chmod 600 "${tmp}/id") || rc=$?
+        if [[ "$rc" -eq 0 ]]; then
+            ssh-keygen -y -P '' -f "${tmp}/id" > "${tmp}/id.pub" 2>/dev/null || {
+                rc=1
+                err "${from} is not an unencrypted OpenSSH private key (a passphrase-protected key must be decrypted first: ssh-keygen -p)."
+            }
+        fi
+    fi
+    if [[ "$rc" -eq 0 ]]; then
+        SSH_PUB="$(cat "${tmp}/id.pub")"
+        ssh_seal_new "$vname" "${tmp}/id" "$SSH_OPT_HOST" "$SSH_OPT_USER" "$port" "$SSH_PUB" || rc=$?
+    fi
+    rm -rf "$tmp"
+    [[ "$rc" -eq 0 ]] || { err "nothing usable was created for keys/${vname}."; exit 1; }
+    ssh_apply_egress
+}
+
+# The main entries of the SSH namespaces (sidecars and seal temps excluded).
+ssh_vault_keys() {
+    vault_run ro sh -c '
+        cd /vault/keys 2>/dev/null || exit 0
+        for d in git-ssh server ssh servers; do
+            [ -d "$d" ] || continue
+            find "$d" -type f
+        done | grep -Ev "\.(host|hostname|user|port|known_hosts|pub|tmp-at-rest)$" | sort
+    '
+}
+
+cmd_ssh_list() {
+    cmd_allow_need_node || exit 1
+    local keys k where any=0
+    keys="$(ssh_vault_keys)"
+    while IFS= read -r k; do
+        [[ -n "$k" ]] || continue
+        any=1
+        if where="$(node "$ALLOWLIST_JS" ssh-get "$AEGIS_ALLOWLIST_CUSTOM_FILE" "$k" 2>/dev/null)"; then
+            printf '%s\t%s\n' "$k" "${where/$'\t'/:}"
+        else
+            printf '%s\t%s\n' "$k" "no SSH port open (aegis ssh set ${k} --host <host> [--port <p>])"
+        fi
+    done <<<"$keys"
+    [[ "$any" -eq 1 ]] || log "no SSH keys in the vault yet: aegis ssh new <name> --host <host>"
+}
+
+cmd_ssh_show() {
+    [[ $# -eq 1 ]] || { err "usage: aegis ssh show <name>"; exit 2; }
+    local vname
+    vname="$(ssh_vault_name "$1")" || exit $?
+    case "$(vault_state "$vname")" in
+        enc|plain) ;;
+        *) err "no such SSH key: keys/${vname}  (see: aegis ssh list)"; exit 2 ;;
+    esac
+    if [[ "$(vault_state "${vname}.pub")" == missing ]]; then
+        err "keys/${vname} has no public key recorded (it was sealed before 'aegis ssh')."
+        err "its public key is the one you sent when you set it up; or re-create it with 'aegis ssh rm' + 'aegis ssh new'."
+        exit 1
+    fi
+    vault_ensure_pass "${vname}.pub"
+    vault_open "${vname}.pub" || { err "could not decrypt keys/${vname}.pub (wrong passphrase?)."; exit 1; }
+}
+
+cmd_ssh_set() {
+    ssh_parse_opts set "$@"
+    local usage="aegis ssh set <name> [--host <h>] [--user <u>] [--port <p>] [--known-hosts-from <file>]"
+    [[ -n "$SSH_OPT_NAME" ]] || { err "usage: ${usage}"; exit 2; }
+    if [[ -z "$SSH_OPT_HOST$SSH_OPT_USER$SSH_OPT_PORT$SSH_OPT_KH" ]]; then
+        err "usage: ${usage}"
+        err "nothing to change: pass at least one option."
+        exit 2
+    fi
+    cmd_allow_need_node || exit 1
+    ssh_need_tools ssh-keygen
+    local vname cur host port
+    vname="$(ssh_vault_name "$SSH_OPT_NAME")" || exit $?
+    case "$(vault_state "$vname")" in
+        enc|plain) ;;
+        *) err "no such SSH key: keys/${vname}  (create one: aegis ssh new ${SSH_OPT_NAME} --host <host>)"; exit 2 ;;
+    esac
+    vault_prompt_pass_seal "$vname" || exit 1
+    # Where it connects now: the store, else the sidecars of a key sealed
+    # before `aegis ssh` (the real hostname wins over an alias).
+    cur="$(node "$ALLOWLIST_JS" ssh-get "$AEGIS_ALLOWLIST_CUSTOM_FILE" "$vname" 2>/dev/null || true)"
+    host="${cur%%$'\t'*}" port="${cur#*$'\t'}"
+    if [[ -z "$cur" ]]; then
+        host="$(vault_read_optional "${vname}.hostname")"
+        [[ -n "$host" ]] || host="$(vault_read_optional "${vname}.host")"
+        port="$(vault_read_optional "${vname}.port")"
+    fi
+    host="${SSH_OPT_HOST:-$host}"
+    port="${SSH_OPT_PORT:-${port:-22}}"
+    if [[ -z "$host" ]]; then
+        VAULT_PASS=""
+        err "keys/${vname} has no host yet: pass --host <host>."
+        exit 2
+    fi
+    ssh_check_server "$host" "$port"
+    SSH_KNOWN_HOSTS=""
+    if [[ -n "$SSH_OPT_HOST$SSH_OPT_PORT$SSH_OPT_KH" ]]; then
+        ssh_host_key "$host" "$port" "$SSH_OPT_KH"
+    fi
+    local port_side="" rc=0
+    [[ -n "$SSH_OPT_HOST$SSH_OPT_PORT" ]] && port_side="$port"
+    secret_sidecars_seal "$vname" "$SSH_OPT_HOST" "" "$SSH_OPT_USER" "$port_side" "$SSH_KNOWN_HOSTS" || rc=$?
+    VAULT_PASS=""
+    [[ "$rc" -eq 0 ]] || exit 1
+    node "$ALLOWLIST_JS" ssh-set "$AEGIS_ALLOWLIST_CUSTOM_FILE" "$vname" "$host" "$port" >/dev/null || exit 1
+    log "keys/${vname} -> ${host}:${port} (SSH open for exactly this server and port)."
+    ssh_apply_egress
+}
+
+cmd_ssh_rm() {
+    [[ $# -eq 1 ]] || { err "usage: aegis ssh rm <name>"; exit 2; }
+    cmd_allow_need_node || exit 1
+    local vname
+    vname="$(ssh_vault_name "$1")" || exit $?
+    case "$(vault_state "$vname")" in
+        enc|plain) ;;
+        *) err "no such SSH key: keys/${vname}  (see: aegis ssh list)"; exit 2 ;;
+    esac
+    log "the vault is not backed up yet: removing this cannot be undone."
+    if ! vault_confirm "remove keys/${vname}, its sidecars, and close its SSH port?" >&2; then
+        log "cancelled: nothing was removed."
+        exit 0
+    fi
+    vault_run rw sh -c '
+        n="$1"; shift
+        for s in "" "$@"; do rm -f "/vault/keys/${n}${s:+.$s}" || exit 1; done
+        rmdir "$(dirname "/vault/keys/$n")" 2>/dev/null || true
+    ' sh "$vname" "${SSH_KEY_SIDECARS[@]}" || { err "keys/${vname} could not be removed."; exit 1; }
+    log "removed: keys/${vname} and its sidecars."
+    if node "$ALLOWLIST_JS" ssh-rm "$AEGIS_ALLOWLIST_CUSTOM_FILE" "$vname" >/dev/null; then
+        log "its SSH port is closed."
+        ssh_apply_egress
+    fi
+}
+# --- END aegis ssh -------------------------------------------------------------
+
+cmd_vault() {
+    local sub="${1:-}"
+    [[ $# -gt 0 ]] && shift || true
+    case "$sub" in
+        forget)
+            require_vault_cache_helper
+            local out
+            out="$(node "$VAULT_CACHE_JS" forget)" || { err "could not clear the vault passphrase cache"; exit 1; }
+            if printf '%s' "$out" | grep -q '"removed":true'; then
+                log "cached vault passphrase cleared"
+            else
+                log "no cached passphrase (nothing to clear)"
+            fi
+            ;;
+        cache)
+            local sub2="${1:-}"
+            case "$sub2" in
+                status)
+                    require_vault_cache_helper
+                    local s
+                    s="$(node "$VAULT_CACHE_JS" status)" || { err "could not read the vault passphrase cache status"; exit 1; }
+                    if printf '%s' "$s" | grep -q '"active":true'; then
+                        local exp
+                        exp="$(printf '%s' "$s" | sed -n 's/.*"expires_at":"\([^"]*\)".*/\1/p')"
+                        log "cache: active (expires ${exp:-unknown})"
+                    else
+                        log "cache: none"
+                    fi
+                    ;;
+                *)
+                    err "unknown 'aegis vault cache' subcommand: ${sub2:-(none)}"
+                    err "usage: aegis vault cache status"
+                    exit 2
+                    ;;
+            esac
+            ;;
+        *)
+            err "unknown 'aegis vault' subcommand: ${sub:-(none)}"
+            err "usage: aegis vault forget | aegis vault cache status"
+            exit 2
+            ;;
+    esac
+}
+
+require_vault_cache_helper() {
+    if ! command -v node >/dev/null 2>&1; then
+        err "node is required for 'aegis vault forget|cache status' but was not found in PATH."
+        exit 1
+    fi
+    if [[ ! -f "$VAULT_CACHE_JS" ]]; then
+        err "the configuration is incomplete - the vault cache helper is missing next to the launcher: $VAULT_CACHE_JS"
+        exit 1
+    fi
+}
+
 cmd_secret() {
     local action="${1:-list}"
     [[ $# -gt 0 ]] && shift || true
@@ -5833,7 +5813,7 @@ cmd_secret() {
         help|-h|--help) cmd_secret_help ;;
         *)
             err "unknown 'aegis secret' subcommand: $action"
-            err "usage: aegis secret [list|show <name>|put <name> --prompt|--put <name> [--kind K] --from <host-file>|put <name> --kind K --stdin (piped)|edit <name>|host set <name> [--host H ...]|migrate-kinds|rm <name>]"
+            err "usage: aegis secret [list|show <name>|put <name> --prompt|--put <name> [--kind K] --from <host-file>|put <name> --kind K --stdin (piped)|edit <name>|rm <name>]   (SSH keys: aegis ssh)"
             err "       aegis shell --secret <name> [--secret <name2>] --env auto|--env <vault-name>"
             exit 2
             ;;
@@ -5848,10 +5828,11 @@ aegis secret — the vault (never mounted into the workstation)
                                 the secret side, and the non-secret folders.
                                 Never prints content.
   aegis secret show <name>      Prints ONE secret's content, after a confirmation.
-  aegis secret put <name> [--kind git-ssh|server|env|token] --from <host-file>
+  aegis secret put <name> [--kind env|token] --from <host-file>
                                 Writes a file into the vault under the kind's
-                                namespace (git-ssh/, server/, env/, or the keys/
-                                root for tokens). The content is VALIDATED per
+                                namespace (env/, or the keys/ root for tokens).
+                                SSH keys are made with 'aegis ssh' (see: aegis
+                                ssh help); --kind git-ssh|server is refused. The content is VALIDATED per
                                 kind before the passphrase is asked; without
                                 --kind the CLI asks what you are sealing. If the
                                 name already exists it REPLACES its content (it
@@ -5884,15 +5865,6 @@ aegis secret — the vault (never mounted into the workstation)
                                 The old value is never printed; sidecars are
                                 untouched. Needs an interactive terminal;
                                 scripts use put --stdin.
-  aegis secret host set <name> [--host H] [--hostname H] [--user U] [--port P]
-                               [--known-hosts-from FILE]
-                                Writes the SIDECARS of an existing key, SEALED on
-                                the spot (T39.1) — a new sidecar never waits for
-                                a migration. Metadata travels by flag; sensitive
-                                material (known_hosts) only by FILE. One prompt
-                                for the whole set. Each field replaces atomically;
-                                there is no rollback across fields (re-run says
-                                which remain).
   aegis secret rm <name>        Removes one secret. There is no undo: the vault is
                                 not part of `aegis backup` yet.
   aegis secret migrate-kinds    Renames the legacy namespaces INSIDE the vault
@@ -5922,7 +5894,7 @@ persistent) and removed when the session ends. Each session gets its OWN directo
 there, so several at once (herdr panes, two shells) never disturb each other. The
 metadata it needs lives next to the key: keys/<name>.host (which host to configure)
 and keys/<name>.known_hosts (the host key, provided by you — without it ssh refuses,
-by design). `aegis secret host set` writes those sidecars sealed (T39.1).
+by design). `aegis ssh new|import|set` writes those sidecars sealed.
 Repeat --secret to bring in more than one key; inside the session,
 `ssh -F "$AEGIS_SSH_CONFIG" -T git@<host>` tests the same chain git will use.
 
@@ -6019,8 +5991,8 @@ _install_required_files() {
         scripts/aegis-env.js scripts/aegis-allowlist.js \
         scripts/generate-build-context.sh scripts/aegis-build-view.js \
         scripts/generate-allowlist.sh scripts/audit-container.sh \
-        config/agent-guard.sh config/license-keys.json \
-        config/allowlist-ports.conf AGENTS.md
+        scripts/generate-dbports.sh \
+        config/agent-guard.sh config/license-keys.json AGENTS.md
 }
 
 # Flushes written data to disk. Rename is atomic, but only data already on disk
@@ -6035,8 +6007,6 @@ _torn_install_files() {
     local dir="${1%/}" f
     [[ -e "${dir}/.devcontainer" ]] || return 0
     for f in $(_install_required_files) version.json template-sources.env; do
-        # The ports file is user data the CLI rewrites; empty is a valid state.
-        [[ "$f" == config/allowlist-ports.conf ]] && continue
         if [[ -e "${dir}/${f}" && ! -s "${dir}/${f}" ]]; then
             printf '%s\n' "$f"
         fi
@@ -6539,12 +6509,30 @@ cmd_install() {
     # untouched; after it, the new one is complete on disk. Copying straight into
     # place (the previous behavior) left 0-byte files behind when the power went.
     local stage="${dst_native%/}.staging-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+    # progress-up-install S3: the staging copy — the ~1 GB silent moment of
+    # this command — gets numbered steps and a byte bar. The total is the
+    # source's own size, measured once; the watcher samples the growing
+    # staging tree (the compose waiter's shape, no machinery of its own).
+    pg_step 1 4 "staging the new version"
+    if _pg_live; then
+        _PG_STAGE_TOTAL="$(( $(du -sk "$src_native" 2>/dev/null | awk '{print $1 + 0}') * 1024 ))"
+        pg_watch_start bytes _pg_stage_bytes "$stage"
+    fi
     rm -rf "${stage}"
     if ! cp -R "${src_native}" "${stage}"; then
+        pg_watch_stop
         rm -rf "${stage}"
         err "could not stage the new configuration next to ${dst} — nothing was changed."
         exit 1
     fi
+    if _pg_live; then
+        # One last measured sample: the copy is over, so the bar ends at the
+        # real staged size even when the poll interval missed the whole copy.
+        pg_progress "$(( $(du -sk "${stage%/}" 2>/dev/null | awk '{print $1 + 0}') * 1024 ))" "${_PG_STAGE_TOTAL:-0}" bytes force
+    fi
+    pg_watch_stop
+    pg_done 1
+    _PG_STAGE_TOTAL=0
 
     # T14: the copy replaces the whole configuration tree, .env included, so the
     # launcher state the user accumulated would vanish — and the encrypted mode
@@ -6569,6 +6557,7 @@ cmd_install() {
     # removed by the EXIT trap), so they are staged with it. The paths recorded
     # are the FINAL ones.
     local lazy_src="${dst_native%/}/template-sources"
+    pg_step 2 4 "syncing the templates"
     mkdir -p "${stage}/template-sources"
     [[ -f "$(_to_native_path "${AEGIS_INSTALL_SANDBOX_SOURCE:-}")/.devcontainer/docker-compose.yml" ]] \
         && cp -R "$(_to_native_path "${AEGIS_INSTALL_SANDBOX_SOURCE}")" "${stage}/template-sources/sandbox"
@@ -6582,6 +6571,7 @@ cmd_install() {
         err "could not persist the template sources — nothing was changed."
         exit 1
     }
+    pg_done 2
 
     # Everything the launcher resolves from this folder (see the configuration
     # block at the top of this file). Missing OR EMPTY is refused here, before
@@ -6611,6 +6601,7 @@ cmd_install() {
 
     # Flush before the switch: rename is atomic, but only data already on disk
     # survives a power cut.
+    pg_step 3 4 "swapping it in"
     _flush_to_disk
     if [[ -d "${dst_native}" ]]; then
         # -<pid>: two installs inside one second must not move the old tree
@@ -6635,9 +6626,11 @@ cmd_install() {
         exit 1
     fi
     _flush_to_disk
+    pg_done 3
 
     # The helper of the copy just installed, not $ENV_JS: on a first install
     # $ENV_JS still points at whatever the launcher resolved before.
+    pg_step 4 4 "configuring"
     if [[ "${fresh}" == "1" ]]; then
         if ! command -v node >/dev/null 2>&1; then
             log "warning: node not found — no tools manifest written; gh and az stay on until 'aegis remove tool'."
@@ -6668,6 +6661,7 @@ cmd_install() {
     # `aegis up` pulls and verifies the signed image by itself — install never
     # duplicates that pull.
     log "Next: aegis up   (pulls and verifies the signed image, then starts)"
+    pg_done 4
 
     # Client-redesign L5: the welcome banner crowns a successful install —
     # the one moment a client is glad they downloaded Aegis. Install is rare
@@ -6843,6 +6837,66 @@ host_mkdir_p() {
     mkdir -p "$1"
 }
 
+# _backup_seal_archive <archive_path> <sha-of-plaintext> <dest> <manifest_name>
+# T1 (encrypted-backup, S2/S4): seal the plaintext tar.gz with THE vault
+# passphrase — the same one that locks keys/ — on the host, exactly like the
+# T39 vault seal path: the passphrase lives only in this shell's memory
+# (VAULT_PASS) and the openssl child's environment (-pass env:VAULT_PASS),
+# never argv, never docker run -e, never a file. Verify-before-replace (the
+# _vault_finalize_seal precedent): the sealed temp file is decrypted back and
+# hash-compared against the plaintext sha the manifest records, and only a
+# byte-perfect round-trip replaces the plaintext archive (temp + mv inside the
+# same directory = atomic). On ANY failure the plaintext file must NOT
+# survive: the temp and the plaintext archive are removed together with the
+# just-written manifest, and any previous sealed backup in the directory is
+# untouched (every backup writes its own timestamped name). VAULT_PASS is
+# cleared on every path out.
+_backup_seal_archive() {
+    local archive_path="$1" sha_in="$2" dest="$3" manifest_name="$4"
+    local tmp="${archive_path}.sealed.tmp" sha_out rc=0
+    if ! {   ( export VAULT_PASS
+               openssl enc -a -aes-256-cbc -pbkdf2 -md sha512 \
+                   -iter "$AEGIS_VAULT_ITER" -pass env:VAULT_PASS -in "$archive_path" ) > "$tmp"; }; then
+        err "sealing the backup failed: openssl could not encrypt the archive."
+        rc=1
+    # Fail fast when the write phase never delivered bytes: an empty temp means
+    # openssl encrypted nothing — the same empty-tmp detector _vault_finalize_seal uses.
+    elif [[ ! -s "$tmp" ]]; then
+        err "sealing the backup failed: the sealed temp file is empty — openssl produced no output (write phase)."
+        rc=1
+    else
+        if ! sha_out="$( ( export VAULT_PASS
+                           openssl enc -d -a -aes-256-cbc -pbkdf2 -md sha512 \
+                               -iter "$AEGIS_VAULT_ITER" -pass env:VAULT_PASS -in "$tmp" 2>/dev/null ) |
+                         sha256sum | cut -d' ' -f1 )"; then
+            sha_out=""
+        fi
+        # The SHA-256 of zero bytes is what the pipeline hashes when openssl
+        # died before emitting one (bad/garbage ciphertext) — the decrypt
+        # detector of _vault_finalize_seal, mirrored.
+        if [[ -z "$sha_out" || "$sha_out" == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" ]]; then
+            err "sealing the backup failed: decryption produced no bytes — the sealed archive did not survive its own round-trip."
+            rc=1
+        elif [[ "$sha_out" != "$sha_in" ]]; then
+            err "sealing the backup failed: round-trip hash mismatch — the sealed archive does not decrypt to the plaintext bytes."
+            rc=1
+        elif ! mv -f "$tmp" "$archive_path"; then
+            err "sealing the backup failed: the plaintext archive was not replaced."
+            rc=1
+        fi
+    fi
+    if [[ "$rc" -ne 0 ]]; then
+        # On ANY failure the plaintext file must NOT survive: remove the temp,
+        # the plaintext archive and this backup's manifest. A previous sealed
+        # backup in the directory is untouched (its own timestamped name).
+        rm -f "$tmp" "$archive_path" "${dest%/}/${manifest_name}"
+        VAULT_PASS=""
+        return 1
+    fi
+    VAULT_PASS=""
+    log "sealed: ${archive_path} (openssl AES-256-CBC, PBKDF2-SHA512, iter ${AEGIS_VAULT_ITER})"
+}
+
 cmd_backup() {
     local dest="$DEFAULT_BACKUP_DIR"
     # BACKUP_PRUNE_SH decides what "build artifacts" means; --full keeps them.
@@ -6883,6 +6937,23 @@ cmd_backup() {
             require_volume_subpath_engine "aegis backup" "monta solo code/ del volumen"
             code_mnt=(--mount "type=volume,src=${code_src},dst=/m/code,volume-subpath=code,readonly") ;;
     esac
+
+    # T1 (encrypted-backup, S2/S4): in the encrypted layout the backup is
+    # sealed with THE vault passphrase — the same one that locks keys/; no
+    # second secret is introduced. One prompt per operation, BEFORE any bytes
+    # are written: an aborted prompt or a missing openssl leaves nothing
+    # behind. An inherited VAULT_PASS (the vault_ensure_pass discipline) is
+    # honored and never re-prompted.
+    local seal=0
+    if agent_state_mode; then
+        seal=1
+        vault_have_ssl || exit 1
+        if [[ -z "${VAULT_PASS:-}" ]]; then
+            log "the archive will be sealed with THE vault passphrase (the same one that locks keys/)."
+            vault_prompt_pass || exit 1
+        fi
+    fi
+
     local -a mnts=("${code_mnt[@]}" -v "$(engram_volume_src):/m/engram:ro")
     local -a ids=(code engram)
     if agent_state_mode; then
@@ -6989,10 +7060,23 @@ cmd_backup() {
     agent_state_mode && _ver=2
     local artifacts="skipped"
     [[ "$mode" == "full" ]] && artifacts="included"
-    printf '{\n  "version": %s,\n  "timestamp": "%s",\n  "archive": "%s",\n  "sha256": "%s",\n  "size_bytes": %s,\n  "image": "%s",\n  "build_artifacts": "%s",\n  "volumes": {%s},\n  "file_counts": {%s}\n}\n' \
-        "$_ver" "$ts" "$archive_name" "$sha256" "$size_bytes" "$BACKUP_IMAGE" \
+    # S5: the manifest records THAT the archive is sealed — still non-secret
+    # content only (sha256/counts/timestamp). sha256 and size_bytes keep
+    # describing the PLAINTEXT content: restore decrypts and compares against
+    # exactly this hash (S3).
+    local sealed_json=""
+    [[ "$seal" -eq 1 ]] && sealed_json=$'\n  "sealed": true,'
+    printf '{\n  "version": %s,%s\n  "timestamp": "%s",\n  "archive": "%s",\n  "sha256": "%s",\n  "size_bytes": %s,\n  "image": "%s",\n  "build_artifacts": "%s",\n  "volumes": {%s},\n  "file_counts": {%s}\n}\n' \
+        "$_ver" "$sealed_json" "$ts" "$archive_name" "$sha256" "$size_bytes" "$BACKUP_IMAGE" \
         "$artifacts" "$volumes_json" "$counts_json" \
         > "${dest%/}/${manifest_name}"
+
+    # T1: seal after the manifest (it names the archive and its plaintext
+    # sha256); only a verified round-trip lets the marker record this backup.
+    if [[ "$seal" -eq 1 ]]; then
+        _backup_seal_archive "$archive_path" "$sha256" "$dest" "$manifest_name" \
+            || { err "the source volumes were NOT touched; run 'aegis backup' again to retry."; exit 1; }
+    fi
 
     printf '%s\n' "$ts" > "${dest%/}/.last-backup"
     printf '%s\n' "$archive_name" >> "${dest%/}/.last-backup"
@@ -7176,8 +7260,18 @@ cmd_restore() {
     # Verify sha256 against a manifest, if one sits next to the archive
     # (same basename, .manifest.json suffix instead of .tar.gz — see
     # cmd_backup). Missing manifest is a NOTE, not a refusal (a user-supplied
-    # archive from elsewhere may not have one).
+    # archive from elsewhere may not have one) — EXCEPT for a sealed archive:
+    # without the plaintext sha256 there is nothing to verify the decryption
+    # against, and S3 demands zero writes on an unverifiable decryption.
     local manifest="${archive%.tar.gz}.manifest.json"
+    # S3 armor detection, the vault_state precedent: the FIRST 8 BYTES decide
+    # (openssl armor starts with the base64 of "Salted__" = "U2FsdGVk"),
+    # never the secret itself. A plaintext archive is a pre-sealing backup
+    # and restores exactly as before.
+    local sealed=0
+    if [[ "$(head -c 8 "$archive" 2>/dev/null)" == "U2FsdGVk" ]]; then
+        sealed=1
+    fi
     local n_steps=1 step=1
     [[ -f "$manifest" ]] && n_steps=2
     if [[ -f "$manifest" ]]; then
@@ -7185,16 +7279,60 @@ cmd_restore() {
         pg_step "$step" "$n_steps" "Verifying the checksum"
         step=$(( step + 1 ))
         expected="$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).sha256)' "$manifest" 2>/dev/null || true)"
-        pg_spin_start "sha256"
-        actual="$(sha256_file "$archive")"
-        pg_spin_stop
-        if [[ -n "$expected" && "$expected" != "$actual" ]]; then
-            err "sha256 mismatch: manifest says $expected, archive is $actual — refusing to restore a possibly corrupted/tampered archive."
-            exit 1
+        if [[ "$sealed" -eq 1 ]]; then
+            # S3/S4: decrypt-stream to a HASH ONLY — the plaintext never
+            # touches the disk, and no extraction can start until the
+            # decrypted stream matches the manifest (the _vault_finalize_seal
+            # round-trip-hash precedent). The prompt is ONCE: a failed
+            # verification refuses, it does not re-ask.
+            vault_have_ssl || exit 1
+            if [[ -z "$expected" ]]; then
+                err "the manifest has no readable sha256 — a sealed archive cannot be verified without it: refusing."
+                exit 1
+            fi
+            if [[ -z "${VAULT_PASS:-}" ]]; then
+                vault_prompt_pass || { VAULT_PASS=""; exit 1; }
+            fi
+            local sha_out
+            pg_spin_start "decrypting + sha256"
+            if ! sha_out="$( ( export VAULT_PASS
+                               openssl enc -d -a -aes-256-cbc -pbkdf2 -md sha512 \
+                                   -iter "$AEGIS_VAULT_ITER" -pass env:VAULT_PASS -in "$archive" 2>/dev/null ) |
+                             sha256sum | cut -d' ' -f1 )"; then
+                sha_out=""
+            fi
+            pg_spin_stop
+            # The zero-byte hash is openssl dying before emitting one (wrong
+            # passphrase / corruption) — the decrypt detector of
+            # _vault_finalize_seal, mirrored.
+            if [[ -z "$sha_out" || "$sha_out" == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" ]]; then
+                VAULT_PASS=""
+                err "wrong passphrase or corrupt archive: the vault passphrase did not decrypt this archive — nothing was written."
+                exit 1
+            fi
+            if [[ "$expected" != "$sha_out" ]]; then
+                VAULT_PASS=""
+                err "sha256 mismatch after decryption: manifest says $expected, the decrypted archive is $sha_out — refusing to restore a corrupted/tampered archive. Nothing was written."
+                exit 1
+            fi
+            actual="$sha_out"
+            log "sha256 verified on the DECRYPTED stream (sealed archive): $manifest"
+        else
+            pg_spin_start "sha256"
+            actual="$(sha256_file "$archive")"
+            pg_spin_stop
+            if [[ -n "$expected" && "$expected" != "$actual" ]]; then
+                err "sha256 mismatch: manifest says $expected, archive is $actual — refusing to restore a possibly corrupted/tampered archive."
+                exit 1
+            fi
+            log "sha256 verified against manifest: $manifest"
         fi
-        log "sha256 verified against manifest: $manifest"
         pg_done 1
     else
+        if [[ "$sealed" -eq 1 ]]; then
+            err "the archive is sealed but its manifest is missing ($manifest): a sealed archive cannot be verified without the plaintext sha256 — refusing. Nothing was written."
+            exit 1
+        fi
         log "no manifest found next to archive ($manifest) — skipping sha256 verification."
     fi
 
@@ -7264,14 +7402,35 @@ cmd_restore() {
     fi
     pg_step "$step" "$n_steps" "Restoring [${members[*]}]"
     local tar_status=0
-    pg_run_counted "${total_files:-0}" files -- env MSYS_NO_PATHCONV=1 docker run --rm --network none \
-        "${mounts[@]}" \
-        -v "${archive_dir}:/restore-src:ro" \
-        -e AEGIS_RESTORE_ROOT=/data \
-        -e AEGIS_RESTORE_ARCHIVE="/restore-src/${archive_base}" \
-        -e AEGIS_RESTORE_MODE="$restore_mode" \
-        -e AEGIS_RESTORE_TARGETS="$extract_targets" \
-        "$BACKUP_IMAGE" sh -c "$RESTORE_SH" || tar_status=$?
+    if [[ "$sealed" -eq 1 ]]; then
+        # S3/S4: the verified archive is decrypted ON THE FLY into the restore
+        # container's stdin — a plaintext copy never exists on disk. The
+        # passphrase travels in this shell's memory and openssl's environment
+        # (-pass env:VAULT_PASS), never argv and never docker run -e.
+        # RESTORE_SH reads $AEGIS_RESTORE_ARCHIVE exactly once per pass, so
+        # /dev/stdin serves both modes (tar streams, nothing seeks back).
+        ( export VAULT_PASS
+          openssl enc -d -a -aes-256-cbc -pbkdf2 -md sha512 \
+              -iter "$AEGIS_VAULT_ITER" -pass env:VAULT_PASS -in "$archive" ) |
+        pg_run_counted "${total_files:-0}" files -- env MSYS_NO_PATHCONV=1 docker run -i --rm --network none \
+            "${mounts[@]}" \
+            -v "${archive_dir}:/restore-src:ro" \
+            -e AEGIS_RESTORE_ROOT=/data \
+            -e AEGIS_RESTORE_ARCHIVE="/dev/stdin" \
+            -e AEGIS_RESTORE_MODE="$restore_mode" \
+            -e AEGIS_RESTORE_TARGETS="$extract_targets" \
+            "$BACKUP_IMAGE" sh -c "$RESTORE_SH" || tar_status=$?
+        VAULT_PASS=""
+    else
+        pg_run_counted "${total_files:-0}" files -- env MSYS_NO_PATHCONV=1 docker run --rm --network none \
+            "${mounts[@]}" \
+            -v "${archive_dir}:/restore-src:ro" \
+            -e AEGIS_RESTORE_ROOT=/data \
+            -e AEGIS_RESTORE_ARCHIVE="/restore-src/${archive_base}" \
+            -e AEGIS_RESTORE_MODE="$restore_mode" \
+            -e AEGIS_RESTORE_TARGETS="$extract_targets" \
+            "$BACKUP_IMAGE" sh -c "$RESTORE_SH" || tar_status=$?
+    fi
 
     if [[ "$tar_status" -ne 0 ]]; then
         pg_fail "$step" "exit ${tar_status}"
@@ -8522,11 +8681,13 @@ cmd_help_client_expired() {
 
 Your license expired (aegis account shows it). Until it is extended, these
 still work so your data is never stranded:
-  backup [--dest <dir>] [--full]    Back up code and Engram (--full: keep build output)
-  export <path> [--dest <dir>]      Copy a file out of the workstation
-  stop                        Stop it (your files and sessions are kept)
-  down                        Remove the containers (volumes are kept)
-  status                      What is running, resource use, volume sizes, last backup
+  aegis backup [--dest <dir>] [--full]
+                                   Back up code and Engram (--full: keep build output)
+  aegis export <path> [--dest <dir>]
+                                   Copy a file out of the workstation
+  aegis stop                       Stop it (your files and sessions are kept)
+  aegis down                       Remove the containers (volumes are kept)
+  aegis status                     What is running, resource use, volume sizes, last backup
 EOF
 }
 
@@ -8535,26 +8696,31 @@ EOF
 # so it is not advertised here either.
 cmd_help_client_unlicensed() {
     cat <<'EOF'
-aegis — Aegis Workstation (client)
+aegis — Aegis Workstation: hermetic dev workstation for supervised AI agents
 
 This machine has no valid license yet. Activate it first:
   aegis license activate <license-id>
 
 Usage: aegis <command> [options]
 
-  version                     Print the product version
-  license [--file <path>]     Verify the signed license offline and show what it
-                              entitles, or the reason it was refused
-                              (alias: `aegis account`, kept for muscle memory)
-  license activate <license-id> [--url <url>]
-                              Claim a seat for this machine from the licensing
-                              service and store the signed license
-  license renew               Re-sign this machine's license under the current key
-  license heartbeat           Tell the service this machine is alive
-  license retire --yes        Free this machine's seat and delete its local files
-  help, -h, --help            This help
+Common commands:
+  aegis license activate <license-id> [--url <url>]
+                                   Claim a seat for this machine and store the license
+  aegis license [--file <path>]    Verify the license offline (alias: `aegis account`)
+  aegis version                    Print the product version
 
-Docs: docs/11-aegis-cli.md
+Advanced commands:
+  aegis license renew              Re-sign this machine's license under the current key
+  aegis license heartbeat          Tell the licensing service this machine is alive
+  aegis license retire --yes       Free this machine's seat and delete its local files
+
+Options:
+  --version, -v         Print version and exit
+  --help, -h            Show this help
+
+License: ~/.aegis/license (AEGIS_LICENSE_FILE)
+Docs:    docs/11-aegis-cli.md
+Home:    https://github.com/vangen-group/aegis-workstation
 EOF
 }
 
@@ -8579,127 +8745,87 @@ AEGIS_BANNER
 
 cmd_help_client() {
     cat <<'EOF'
-aegis — Aegis Workstation
+aegis — Aegis Workstation: hermetic dev workstation for supervised AI agents
 
 Usage: aegis <command> [options]
+       aegis shell [path] [--env <name>] [--secret <name>] [--cmd <command>]
+       aegis herdr [path] [--secret <name>] [--cmd <command>]
+       aegis <command> --help
 
-Empezar
-  install                     Download the licensed configuration bundle for this
-                              machine, verify it, and install it (needs an
-                              active license)
-  up                          Download the licensed image, verify its signature,
-                              then start the workstation
-  stop                        Stop it (your files and sessions are kept)
-  down                        Remove the containers (volumes are kept)
-  status                      What is running, resource use, volume sizes, last backup
-  version                     Print the product version (aegis and its image)
-  update                      Move to the latest version: install the signed
-                              bundle, update this CLI, start the new image (your
-                              environments and tools are rebuilt on it), then
-                              remove the previous images. Volumes are kept.
-  audit                       Check the security posture (PASS / FAIL)
+Common commands:
+  aegis install                    Install the licensed configuration bundle (needs a license)
+  aegis up                         Verify the signed image and start the workstation
+  aegis shell [path]               Open a terminal under /workspace/<path>
+  aegis herdr [path]               Open herdr under /workspace/<path>
+  aegis status                     What is running, resource use, volume sizes, last backup
+  aegis stop                       Stop it (your files and sessions are kept)
+  aegis down                       Remove the containers (volumes are kept)
+  aegis update                     Move to the latest signed bundle, CLI and image
+  aegis allow <subcommand>         Manage egress: web domains and database hosts
+  aegis ssh <subcommand>           Create SSH keys and register servers (prints the public key)
+  aegis export <path> [--dest <dir>]
+                                   Copy a file out of the workstation
+  aegis import <host-path> <path>  Copy a file into the workstation
+  aegis secret list                What is in the vault (names, sizes and dates)
+  aegis secret show <name>         Print ONE secret's content, after a confirmation
+  aegis secret put <name> --from <host-file>|--stdin
+                                   Seal a file or a pipe into the vault (REPLACES)
+  aegis secret rm <name>           Remove one secret (no undo)
+  aegis backup [--dest <dir>] [--full]
+                                   Back up code and Engram (--full: keep build output)
+  aegis restore <archive>          Restore a backup (stop the workstation first)
+  aegis version                    Print the product version (aegis and its image)
 
-Trabajar
-  shell [path]                Open a terminal under /workspace/<path>
-  herdr [path]                Open herdr under /workspace/<path>
-    --secret <name>           Inject one vault secret into this session only
-    --tunnel <host>:<port>[:<localPort>]
-                              Repeatable: a localhost tunnel inside the session
-                              for TCP clients that cannot use a proxy; the T40
-                              allow rule is still the gate
-    --cmd <command>           Run a single command instead of a terminal (or: -- <command>)
-  profile use <path|name>     Store the chosen OpenCode provider profile in
-                              the code volume (survives a home/config
-                              recreation, rides `aegis backup`) and apply it
-                              now; it re-applies automatically on the next
-                              configure. API keys belong in /connect, never
-                              in a profile.
-  profile show                Stored path, provider names, applied vs pending.
-  profile clear               Remove the stored profile (live config untouched).
+Advanced commands:
+  aegis audit                      Check the security posture (PASS / FAIL)
+  aegis sandbox <repo>             Disposable per-repo container, model-endpoints-only egress
+  aegis promote <repo>             Copy an evaluated sandbox repo into code/, then remove it
+  aegis net connect [network]      Join an internal network (alias: aegis connect)
+  aegis net disconnect [network]   Leave it (alias: aegis disconnect)
+  aegis env list [--remote <lang>] Languages, versions and tools (or versions to add)
+  aegis add environment <lang> [version...]
+                                   Add a language: java, dotnet, node, go, python, cpp
+  aegis remove environment <lang> [version]
+                                   Remove a language or one of its versions
+  aegis add tool <name>            Add an opt-in CLI: gh, az, railway, chromium
+  aegis remove tool <name>         Take it out of the image again
+  aegis profile use <path|name>    Store and apply the OpenCode provider profile
+  aegis profile show|clear         Show the stored profile, or remove it
+  aegis secret edit <name>         Change one secret's value in a RAM-only editor
+  aegis vault forget               Clear the cached vault passphrase
+  aegis vault cache status         Whether a vault passphrase is cached
+  aegis volume migrate-to-vault    Move the agent-state volumes into the encrypted vault
+  aegis image verify [--tag <tag>] Prove the local image was signed by this project's CI
+  aegis build windows <path>.iss   Compile an Inno Setup script in a throwaway Wine container
+  aegis build clean                Remove the build-windows image
+  aegis telemetry status           Whether it is on, where it goes (never the token)
+  aegis telemetry on               Turn it on: sends to Vangen's fixed collector
+  aegis telemetry off              Turn it off and forget the token
+  aegis license [--file <path>]    Verify the license offline (alias: `aegis account`)
+  aegis license activate <license-id> [--url <url>]
+                                   Claim a seat for this machine and store the license
+  aegis license renew              Re-sign this machine's license under the current key
+  aegis license heartbeat          Tell the licensing service this machine is alive
+  aegis license retire --yes       Free this machine's seat and delete its local files
 
-Red
-  allow list                  The egress allowlist
-  allow add <domain>          Reach one more place (from the host only)
-    --reason "..."              why it is there; `allow list` shows it back
-    --for 30m|2h|7d             let it expire by itself (default: it does not)
-    --ip                        only for a bare IP, which has to be asked for
-  allow add --port <n> --for 30m|2h|7d [--to <host>]
-                              A port window, no host: that port opens for EVERY
-                              host already in the allowlist while it lives.
-                              --to seeds the window's auto-tunnel (localhost:<n>
-                              -> <host>:<n>) for every session
-  allow remove <domain>       Take one of your own entries back out
-  allow remove --port <n>     Take that port window back out
-  allow reload                Re-apply the allowlist to the running proxy
-  allow denied                What the proxy actually blocked
-  allow test <url>            Would the proxy let this through?
-  net connect [network]       Join an internal network to reach database containers
-  net disconnect [network]    Leave it (alias: `aegis connect`, kept)
-  sandbox <repo>              Boot a disposable, per-repo container with only
-                              <repo> mounted and model-endpoints-only egress
-    --gvisor                  Use the gVisor (runsc) runtime for this container
-    --env <name>              Load one vault env file into this session only
-    --secret <name>           Inject vault secret <name> as an environment variable
-    --cmd <command>           Run a single command instead of a terminal (or: -- <command>)
-  promote <repo>              Copy an evaluated sandbox repo into the
-                              workstation's code volume, then tear the sandbox
-                              down (copy first, destroy second)
-    --to <destino>            Destination under code/ (default: the repo name)
-    --force                   Replace the destination if it already exists
-    --allow-dirty             Promote even with uncommitted changes
+Options:
+  --env <name>          Load one vault env file into this session only (shell, sandbox)
+  --secret <name>       Inject one vault secret into this session only (shell, herdr, sandbox)
+  --cmd <command>       Run one command instead of a terminal (or: -- <command>)
+  --gvisor              Run the sandbox under gVisor (runsc)
+  --to <destino>        promote: destination under code/ (default: the repo name)
+  --force               promote: replace an existing destination
+  --allow-dirty         promote: promote even with uncommitted changes
+  --version, -v         Print version and exit
+  --help, -h            Show this help
 
-Tus datos
-  secret list                 What is in the vault (names, sizes and dates)
-  secret show <name>          Print ONE secret's content, after a confirmation
-  secret put <name> --from <host-file>
-                              Write a file into the vault (REPLACES if it exists)
-  secret put <name> --stdin   Same seal from a pipe (cat <file> | aegis ...)
-  secret host set <name> ...  Write an existing key's sidecars, sealed (T39.1)
-  secret rm <name>            Remove one secret (no undo)
-  backup [--dest <dir>] [--full]    Back up code and Engram (--full: keep build output)
-  restore <archive>           Restore a backup (stop the workstation first)
-  export <path> [--dest <dir>]      Copy a file out of the workstation
-  import <host-path> <path>         Copy a file into the workstation
-
-Licencia
-  license [--file <path>]     Verify the signed license offline and show what it
-                              entitles, or the reason it was refused
-                              (alias: `aegis account`, kept for muscle memory)
-  license activate <license-id> [--url <url>]
-                              Claim a seat for this machine from the licensing
-                              service and store the signed license
-  license renew               Re-sign this machine's license under the current key
-  license heartbeat           Tell the service this machine is alive
-  license retire --yes        Free this machine's seat and delete its local files
-  image verify [--tag <tag>]  Prove the local image was signed by this project's CI
-
-Mantener
-  env list                    Languages, versions and tools you have
-  env list --remote <lang>    Versions available to add for one language
-  add environment <lang> [version...]
-                              Add a language (no version: pick from a menu)
-                              lang: java, dotnet, node, go, python, cpp
-  remove environment <lang> [version]
-                              Remove a language or one of its versions
-  add tool <name>             Add an opt-in CLI to the workstation
-  remove tool <name>          Take it out of the image again
-                              name: gh, az, railway, chromium (no name: list them, on/off)
-
-  build windows <path>.iss    Compile an Inno Setup script (code/<Cliente>/<repo>/...)
-                              in a throwaway Wine
-                              container: no network, read-only, only that project
-                              mounted (Docker Engine 26+). The .exe lands in
-                              Output/ next to the .iss; take it out with `aegis export`
-  build clean                 Remove the build-windows image (rebuilt on next use)
-  telemetry status            Whether it is on, where it goes (never the token)
-  telemetry on                Turn it on: sends to Vangen's fixed collector
-  telemetry off               Turn it off and forget the token
-
-Examples
-  aegis shell --env auto code/my-repo
-  aegis backup
-
-Docs: docs/11-aegis-cli.md
+Config:  ~/.aegis/workstation (AEGIS_INSTALL_DIR)
+License: ~/.aegis/license (AEGIS_LICENSE_FILE)
+Profile: /workspace/code/.aegis/profile.json
+Env:     AEGIS_WORKSTATION_DIR overrides the compose folder
+         AEGIS_CODE_DIR binds the code volume to a host path instead
+Docs:    docs/11-aegis-cli.md
+Home:    https://github.com/vangen-group/aegis-workstation
 EOF
 }
 
@@ -9336,6 +9462,8 @@ main() {
         install) cmd_install "$@" ;;
         update) cmd_update_client "$@" ;;
         secret) cmd_secret "$@" ;;
+        ssh) cmd_ssh "$@" ;;
+        vault) cmd_vault "$@" ;;
         profile) cmd_profile "$@" ;;
         telemetry) cmd_telemetry "$@" ;;
         version|--version|-v) cmd_version ;;
