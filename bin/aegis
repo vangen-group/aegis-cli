@@ -4491,11 +4491,19 @@ session_inject_secret() {
     # Since aegis ssh, an SSH port opens only for a server registered with it.
     # A key sealed before that (or never registered) still injects, but the
     # proxy refuses its connection: say so instead of letting ssh fail later.
+    # The server is the REAL one (.hostname wins over an ssh alias in .host),
+    # and the command needs only the port: `ssh set` reads the host itself and
+    # leaves the alias alone.
     if [[ -n "$host" ]] && command -v node >/dev/null 2>&1 && [[ -f "$ALLOWLIST_JS" ]]; then
         if ! node "$ALLOWLIST_JS" sshs "$AEGIS_ALLOWLIST_CUSTOM_FILE" 2>/dev/null |
             awk -F'\t' -v n="$name" '$3 == n { found = 1 } END { exit !found }'; then
-            err "WARNING: ${name} has no SSH port open — the proxy will refuse ${host}."
-            err "register it once with: aegis ssh set ${name} --host ${host} [--port <p>]"
+            local real_host real_port
+            real_host="$(vault_read_optional "${name}.hostname")"
+            [[ -n "$real_host" ]] || real_host="$host"
+            real_port="$(vault_read_optional "${name}.port")"
+            [[ -n "$real_port" ]] || real_port=22
+            err "WARNING: ${name} has no SSH port open — the proxy will refuse ${real_host}:${real_port}."
+            err "register it once with: aegis ssh set ${name} --port ${real_port}"
         fi
     fi
     # keys/<name>.hostname is OPTIONAL and it is what makes host aliases work: with
@@ -5718,11 +5726,33 @@ cmd_ssh_set() {
     ssh_check_server "$host" "$port"
     SSH_KNOWN_HOSTS=""
     if [[ -n "$SSH_OPT_HOST$SSH_OPT_PORT$SSH_OPT_KH" ]]; then
-        ssh_host_key "$host" "$port" "$SSH_OPT_KH"
+        # ssh-legacy-adopt: a host key already sealed for exactly this
+        # host:port was confirmed when the key was set up — reuse it instead of
+        # a fresh ssh-keyscan the host may not be able to run (internal
+        # servers only reachable through the workstation's own path).
+        local sealed_kh="" lookup="$host"
+        [[ "$port" == 22 ]] || lookup="[${host}]:${port}"
+        [[ -z "$SSH_OPT_KH" ]] && sealed_kh="$(vault_read_optional "${vname}.known_hosts")"
+        local kh_tmp="" kh_hit=0
+        if [[ -n "$sealed_kh" ]] && kh_tmp="$(mktemp)"; then
+            printf '%s\n' "$sealed_kh" > "$kh_tmp"
+            ssh-keygen -F "$lookup" -f "$kh_tmp" >/dev/null 2>&1 && kh_hit=1
+            rm -f "$kh_tmp"
+        fi
+        if [[ "$kh_hit" -eq 1 ]]; then
+            log "reusing the host key sealed with keys/${vname} for ${lookup}."
+        else
+            ssh_host_key "$host" "$port" "$SSH_OPT_KH"
+        fi
     fi
-    local port_side="" rc=0
+    local port_side="" rc=0 host_side="$SSH_OPT_HOST" hostname_side=""
     [[ -n "$SSH_OPT_HOST$SSH_OPT_PORT" ]] && port_side="$port"
-    secret_sidecars_seal "$vname" "$SSH_OPT_HOST" "" "$SSH_OPT_USER" "$port_side" "$SSH_KNOWN_HOSTS" || rc=$?
+    # A key with an ssh alias (.host) and a real server (.hostname): --host is
+    # the real server, so it goes to .hostname and the alias stays.
+    if [[ -n "$SSH_OPT_HOST" && -n "$(vault_read_optional "${vname}.hostname")" ]]; then
+        host_side="" hostname_side="$SSH_OPT_HOST"
+    fi
+    secret_sidecars_seal "$vname" "$host_side" "$hostname_side" "$SSH_OPT_USER" "$port_side" "$SSH_KNOWN_HOSTS" || rc=$?
     VAULT_PASS=""
     [[ "$rc" -eq 0 ]] || exit 1
     node "$ALLOWLIST_JS" ssh-set "$AEGIS_ALLOWLIST_CUSTOM_FILE" "$vname" "$host" "$port" >/dev/null || exit 1
