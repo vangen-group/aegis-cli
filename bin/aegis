@@ -2766,6 +2766,7 @@ cmd_allow_usage() {
     err "       aegis allow add db <host> --port <n> [--reason \"...\"]   (a database, reached by its real name through dbports)"
     err "       aegis allow remove <domain>"
     err "       aegis allow remove <host> <n>   (take that database back out)"
+    err "       aegis allow migrate             (turn legacy {host, port} entries into databases)"
     err "       aegis allow reload"
     err "       aegis allow denied [--last <log-lines>]"
     err "       aegis allow test <url>"
@@ -2778,6 +2779,7 @@ cmd_allow() {
         list)   cmd_allow_list ;;
         add)    cmd_allow_add "$@" ;;
         remove) cmd_allow_remove "$@" ;;
+        migrate) cmd_allow_migrate "$@" ;;
         reload) cmd_allow_reload ;;
         denied) cmd_allow_denied "$@" ;;
         test)   cmd_allow_test "$@" ;;
@@ -2786,6 +2788,25 @@ cmd_allow() {
             exit 2
             ;;
     esac
+}
+
+# update-hardening S2: legacy {domain, port} entries (removed port pairs and
+# windows) become database entries, through the same rules as `allow add db`.
+# All or nothing: a refused one writes nothing.
+cmd_allow_migrate() {
+    [[ $# -eq 0 ]] || { err "usage: aegis allow migrate   (no arguments)"; exit 2; }
+    cmd_allow_need_node || return 1
+    [[ -f "$AEGIS_ALLOWLIST_CUSTOM_FILE" ]] || { log "nothing to migrate"; return 0; }
+    local out rc=0
+    out="$(node "$ALLOWLIST_JS" migrate "$AEGIS_ALLOWLIST_CUSTOM_FILE")" || rc=$?
+    [[ -n "$out" ]] && printf '%s\n' "$out"
+    if [[ "$rc" != "0" ]]; then
+        err "nothing was written — fix the entries named above, then run 'aegis allow migrate' again."
+        return 1
+    fi
+    if grep -q '^migrated db:' <<<"$out"; then
+        _allow_apply_extra_hosts
+    fi
 }
 
 # node is what reads and writes the JSON; the file lives on the host, never in a
@@ -3329,7 +3350,7 @@ cmd_allow_list() {
     local legacy
     legacy="$(printf '%s\n' "$detail" | awk -F'\t' '$2 ~ /^ignored/ { printf "  %-36s %s\n", $1, $2 }')"
     if [[ -n "$legacy" ]]; then
-        log "ignored (legacy port entries — never opened; take them out with 'aegis allow remove <host>'):"
+        log "ignored (legacy port entries — never opened; a database: 'aegis allow migrate'; otherwise 'aegis allow remove <host>'):"
         printf '%s\n' "$legacy"
         echo
     fi
@@ -5985,7 +6006,29 @@ cmd_secret_show() {
 # atomic-update: the files an installed configuration cannot work without —
 # the launcher resolves every one of them from AEGIS_WORKSTATION_DIR. Checked
 # for presence AND content: a power cut leaves the name with 0 bytes behind.
+# update-hardening S1: the bundle itself lists them (required-files.txt, signed
+# with the rest of the bundle), so a bundle that drops a file is not judged by
+# an older CLI's list. Without that file (bundles before 0.51), the launcher's
+# own list is the fallback. An entry that is absolute or climbs out with ".."
+# prints "!<entry>" — the caller refuses the install on it.
 _install_required_files() {
+    local dir="${1:-}" line
+    if [[ -n "$dir" && -s "${dir%/}/required-files.txt" ]]; then
+        while IFS= read -r line || [[ -n "$line" ]]; do
+            line="${line%$'\r'}"
+            [[ -z "$line" || "$line" == \#* ]] && continue
+            if [[ "$line" == /* || "$line" == *..* || "$line" =~ [[:space:]] ]]; then
+                printf '!%s\n' "$line"
+            else
+                printf '%s\n' "$line"
+            fi
+        done < "${dir%/}/required-files.txt"
+        return 0
+    fi
+    _install_builtin_required_files
+}
+
+_install_builtin_required_files() {
     printf '%s\n' \
         .devcontainer/docker-compose.yml .devcontainer/Dockerfile.client \
         scripts/aegis-env.js scripts/aegis-allowlist.js \
@@ -6006,7 +6049,8 @@ _flush_to_disk() {
 _torn_install_files() {
     local dir="${1%/}" f
     [[ -e "${dir}/.devcontainer" ]] || return 0
-    for f in $(_install_required_files) version.json template-sources.env; do
+    for f in $(_install_required_files "$dir") version.json template-sources.env; do
+        [[ "$f" == !* ]] && continue
         if [[ -e "${dir}/${f}" && ! -s "${dir}/${f}" ]]; then
             printf '%s\n' "$f"
         fi
@@ -6020,8 +6064,8 @@ _newest_complete_backup() {
     for b in $(ls -d "${dst}.bak-"* 2>/dev/null | sort -r); do
         [[ -d "$b" ]] || continue
         ok=1
-        for f in $(_install_required_files); do
-            [[ -s "${b}/${f}" ]] || { ok=0; break; }
+        for f in $(_install_required_files "$b"); do
+            [[ "$f" != !* && -s "${b}/${f}" ]] || { ok=0; break; }
         done
         if [[ "$ok" == 1 ]]; then
             printf '%s' "$b"
@@ -6626,8 +6670,11 @@ cmd_install() {
     fi
 
     local bad=0 f
-    for f in $(_install_required_files); do
-        if [[ ! -e "${stage}/${f}" ]]; then
+    for f in $(_install_required_files "${stage}"); do
+        if [[ "$f" == !* ]]; then
+            err "the new configuration's required-files.txt has an invalid entry: ${f#!}"
+            bad=1
+        elif [[ ! -e "${stage}/${f}" ]]; then
             err "the new configuration is missing: ${f}"
             bad=1
         elif [[ ! -s "${stage}/${f}" ]]; then
@@ -9159,7 +9206,10 @@ cmd_update_client() {
         esac
     done
 
-    [[ "$verbose" == "1" ]] && _update_enable_logging "${HOME}/.aegis/update.log"
+    # The log is always written (a failure points at it); --verbose only
+    # echoes it as well.
+    _update_enable_logging "${HOME}/.aegis/update.log"
+    [[ "$verbose" == "1" ]] || _UPDATE_VERBOSE=0
 
     printf '\n'
     log "Starting aegis update..."
