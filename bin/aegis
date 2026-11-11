@@ -3240,6 +3240,13 @@ cmd_allow_add() {
         fi
         log "dbports: $domain:$port — applications inside Aegis reach it by its real name; any other database stays unreachable."
         _allow_apply_extra_hosts
+        # The local port is assigned in file order (15400+n); surface it so the
+        # connection string can be built immediately (ssh -L model).
+        if [[ -f "$AEGIS_EXTRA_HOSTS_FILE" ]] && grep -q "${domain}:${port}" "$AEGIS_EXTRA_HOSTS_FILE"; then
+            local lp
+            lp="$(sed -n "s/.*\\([0-9]\\{5\\}\\):${domain}:${port}.*/\\1/p" "$AEGIS_EXTRA_HOSTS_FILE" | head -1)"
+            [[ -n "$lp" ]] && log "dbports: $domain:$port → localhost:$lp"
+        fi
         return 0
     fi
 
