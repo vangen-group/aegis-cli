@@ -1057,14 +1057,17 @@ pg_watch_stop() {
     pg_spin_stop
 }
 
-# _pg_pull_counts <docker pull log>: "<layers done> <layers known>". A layer
-# already on disk counts as known and done; the total grows as docker reads
-# the manifest, so it is what docker has announced so far, never a guess.
+# _pg_pull_counts <docker pull log>: "<layers done> <layers known>", counted
+# over layers that TRANSFER this run. 'Already exists' is a layer that moved
+# no bytes, so it counts in neither number (S1): a warm pull cannot look like
+# progress toward a download. The total grows as docker announces each layer
+# it intends to fetch ('Pulling fs layer'), so it is what docker has promised,
+# never a guess; 'Pull complete' is a layer that arrived.
 _pg_pull_counts() {
     local log=$1 known=0 done_=0
     if [[ -f "$log" ]]; then
-        known="$(grep -cE ': (Pulling fs layer|Already exists)$' "$log" || true)"
-        done_="$(grep -cE ': (Pull complete|Already exists)$' "$log" || true)"
+        known="$(grep -cE ': Pulling fs layer$' "$log" || true)"
+        done_="$(grep -cE ': Pull complete$' "$log" || true)"
     fi
     printf '%s %s\n' "${done_:-0}" "${known:-0}"
 }
@@ -3954,6 +3957,42 @@ secret_edit_editor_ready() {
 # throwaway directory on purpose — `docker login` would otherwise persist a credential that lives
 # sixty minutes into ~/.docker/config.json, where it would outlive its usefulness in a file nobody
 # thinks to clean.
+# _pull_final_line <pull log> <elapsed seconds>: the one curated line a
+# successful pull prints, shared by every caller of cmd_image_pull (S4) —
+# the same wording for `aegis up`, `aegis install` and the update's rebuild.
+# Docker's own final status marker is authoritative (S3): 'Image is up to
+# date' means nothing moved, whatever the layer lines say; 'Downloaded newer
+# image' means a download, whatever the counts say. Without a marker (older
+# docker, interrupted log) the transferred-layer count decides. The warm case
+# never claims a download or a byte count; it names the outcome — the ref was
+# already named by the 'pulling <reference>' line above — and verification
+# still runs afterwards in every real call path, unconditionally.
+_pull_final_line() {
+    local log=$1 elapsed=$2 status layers outcome noun
+    layers="$(grep -cE ': Pull complete$' "$log" 2>/dev/null || true)"
+    status="$(grep -E '^Status: (Image is up to date|Downloaded newer image) for ' "$log" 2>/dev/null | tail -n1 || true)"
+    if [[ "$status" == "Status: Image is up to date"* ]]; then
+        outcome=local
+    elif [[ "$status" == "Status: Downloaded newer image"* ]]; then
+        outcome=downloaded
+    elif (( ${layers:-0} > 0 )); then
+        outcome=downloaded
+    else
+        outcome=local
+    fi
+    if [[ "$outcome" == local ]]; then
+        printf 'image already present locally, nothing downloaded (%ss)\n' "$elapsed"
+    elif (( ${layers:-0} > 0 )); then
+        noun="layers"
+        (( layers == 1 )) && noun="layer"
+        printf 'image downloaded (%ss, %s %s)\n' "$elapsed" "$layers" "$noun"
+    else
+        # The marker said a download happened but its layer lines are gone
+        # (truncated log): claim the download, not a count we cannot read.
+        printf 'image downloaded (%ss)\n' "$elapsed"
+    fi
+}
+
 cmd_image_pull() {
     local tag="$AEGIS_IMAGE_TAG" reference config token rc=0
 
@@ -3997,7 +4036,7 @@ cmd_image_pull() {
     _run_with_throwaway_config "$config" env "DOCKER_CONFIG=$config_native" docker pull "$reference" >"$pull_log" 2>&1 || rc=$?
     pg_watch_stop
     if [[ "$rc" -eq 0 ]]; then
-        log "image downloaded ($(( $(date +%s) - started ))s)"
+        log "$(_pull_final_line "$pull_log" "$(( $(date +%s) - started ))")"
     else
         err "the pull failed; last lines (${pull_log}):"
         tail -n 20 "$pull_log" | sed 's/^/  /' >&2

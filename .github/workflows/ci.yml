@@ -27,6 +27,9 @@ jobs:
       - name: Run update UX tests
         run: bash tests/update-uiux.test.sh
 
+      - name: Run pull progress tests
+        run: bash tests/pull-progress.test.sh
+
       # Installer wizard suites (node:test). The provisioning dialog tests run
       # on a real pseudo-terminal via util-linux `script` (preinstalled).
       # One step per test file, each with its own cap: a file that hangs (a
