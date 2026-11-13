@@ -238,6 +238,30 @@
 #   AEGIS_OPENCODE_JSON     The live opencode.json the CLI checks for
 #                           applied-vs-pending. Default:
 #                           /home/dev/.config/opencode/opencode.json.
+#   AEGIS_LOCK_FILE         Advisory process lock held for the whole command
+#                           by `up`, `install` and `update`: flock(1) on this
+#                           file when flock exists, otherwise an atomic
+#                           <file>.d lock directory. Default:
+#                           $HOME/.aegis/launcher.lock. A second mutating
+#                           invocation refuses fast with one line naming the
+#                           lock and the holder's PID; AEGIS_LOCK_WAIT_SECONDS
+#                           (default 0) bounds an optional short retry, and a
+#                           lock whose recorded PID is dead is reclaimed.
+#                           Read-only commands never take the lock.
+#   AEGIS_COMPOSE_WAIT_TIMEOUT
+#                           Seconds `docker compose up -d --wait` may take to
+#                           converge, default 300: a stack that has not
+#                           converged in a few minutes is broken, not slow. On
+#                           expiry the failure is reported as a timeout with
+#                           its log path, not as a generic compose failure.
+#   AEGIS_CURL_CONNECT_TIMEOUT, AEGIS_CURL_STALL_SECONDS,
+#   AEGIS_CURL_STALL_BYTES, AEGIS_CURL_SMALL_MAX_TIME
+#                           Network bounds for the launcher's own downloads:
+#                           TCP connect timeout (15s), stall detection for the
+#                           big transfers (abort when fewer than 1024 bytes
+#                           arrive in 60 seconds — kills a silent connection,
+#                           never a slow healthy one), and a 30s overall cap
+#                           for the small metadata requests.
 
 set -euo pipefail
 
@@ -958,6 +982,235 @@ AEGIS_DEVICE_CREDENTIAL_FILE="${AEGIS_DEVICE_CREDENTIAL_FILE:-$HOME/.aegis/devic
 log() { [[ "${_PG_LIVE_LINE:-0}" -eq 0 ]] || _pg_clear_line; echo "aegis: $*"; }
 err() { [[ "${_PG_LIVE_LINE:-0}" -eq 0 ]] || _pg_clear_line; echo "aegis: $*" >&2; }
 
+# ---------------------------------------------------------------------------
+# S1 (launcher-lock): ONE advisory process lock for the mutating commands.
+#
+# Two concurrent invocations (two shells, or `aegis up` while `aegis update`
+# runs) used to race on the launcher state/.env rewrite, on the
+# .update-previous state file, and on the same dev image tag — and the
+# update's image sweep could delete the image the other process was running.
+#
+# The lock is taken INSIDE cmd_up / cmd_install / cmd_update_client — never in
+# main's dispatch, never in a function those commands call, and never in the
+# read-only commands — so `shell`/`herdr` auto-starting the stack through
+# ensure_up takes it exactly once, and status/down/stop never block behind it.
+#
+# Mechanism: flock(1) when present (Linux, some WSL distros) — the kernel
+# releases it even when the holder is SIGKILLed. Without flock (stock macOS),
+# an atomic mkdir(2) lock directory recording the holder's PID; a lock whose
+# PID is gone is reclaimed — re-confirmed stale immediately before the
+# reclaim, so a live holder is never dispossessed.
+#
+# Release goes through the ONE EXIT trap (_telemetry_on_exit), which every
+# exit path reaches, plus INT/TERM/HUP handlers armed only while the lock is
+# held. Those handlers only release and exit; the EXIT trap runs for them too
+# and releases again — _aegis_lock_release is idempotent, and no second EXIT
+# trap is ever installed.
+#
+# Contention fails fast with ONE actionable line naming the lock path and the
+# holding PID. AEGIS_LOCK_WAIT_SECONDS (default 0: refuse immediately) adds a
+# short bounded retry; its length is stated in the message.
+# ---------------------------------------------------------------------------
+
+AEGIS_LOCK_MODE="${AEGIS_LOCK_MODE:-auto}"                        # auto | flock | mkdir (tests)
+AEGIS_LOCK_FILE="${AEGIS_LOCK_FILE:-$HOME/.aegis/launcher.lock}" # file for flock, <file>.d for mkdir
+AEGIS_LOCK_WAIT_SECONDS="${AEGIS_LOCK_WAIT_SECONDS:-0}"          # bounded retry before refusing; 0 = fail fast
+AEGIS_LOCK_STALE_SECONDS="${AEGIS_LOCK_STALE_SECONDS:-21600}"    # 6h: an update can legitimately run long
+# AEGIS_LOCK_HELD / AEGIS_LOCK_PID / AEGIS_LOCK_MODE are INTERNAL chain
+# bookkeeping, exported only by a holder to its descendants so `update`'s
+# subshell install, its exec handover and its `aegis up` child never fight the
+# ancestor that already holds the lock. Pre-setting them in your environment
+# bypasses the lock entirely: it is an advisory lock against accidents between
+# concurrent aegis runs, not a security boundary (removing the lock path is
+# the documented remedy for a stale one, and an equivalent bypass).
+_AEGIS_LOCK_ACQUIRED=0
+
+_aegis_lock_pid_alive() {
+    [[ "${1:-}" =~ ^[0-9]+$ ]] && kill -0 "$1" 2>/dev/null
+}
+
+_aegis_lock_refuse() {
+    local holder="${1:-unknown}" waited="${2:-0}" wait_note=""
+    (( waited > 0 )) && wait_note=" (still held after waiting ${waited}s)"
+    err "another aegis command is running (PID ${holder}) and holds the launcher lock ${_AEGIS_LOCK_PATH:-$AEGIS_LOCK_FILE}${wait_note} — wait for it to finish; if nothing is running, remove the stale lock: rm -rf ${_AEGIS_LOCK_PATH:-$AEGIS_LOCK_FILE}"
+    exit 1
+}
+
+_aegis_lock_arm_traps() {
+    # The launcher keeps exactly ONE EXIT trap; these handlers only release the
+    # lock and exit, and the EXIT trap — which bash runs for them too —
+    # releases again (idempotent) and does its own cleanup.
+    trap '_aegis_lock_release; exit 130' INT
+    trap '_aegis_lock_release; exit 143' TERM
+    trap '_aegis_lock_release; exit 129' HUP
+}
+
+_aegis_lock_release() {
+    [[ "${_AEGIS_LOCK_ACQUIRED:-0}" == "1" ]] || return 0
+    _AEGIS_LOCK_ACQUIRED=0
+    trap - INT TERM HUP 2>/dev/null || true
+    if [[ -n "${_AEGIS_LOCK_FD:-}" ]]; then
+        flock -u "$_AEGIS_LOCK_FD" 2>/dev/null || true
+        # eval, because bash only reads a fd number before >&- when it is an
+        # unquoted literal digit — a quoted expansion would become a command.
+        eval "exec ${_AEGIS_LOCK_FD}>&-" 2>/dev/null || true
+    fi
+    # The flock lock FILE is deliberately kept (its content is the last
+    # holder's PID, the contention hint; unlinking it would orphan a
+    # concurrent waiter's flock onto an unlinked inode). Only the mkdir lock
+    # directory is removed.
+    if [[ -n "${_AEGIS_LOCK_PATH:-}" && -d "${_AEGIS_LOCK_PATH:-}" ]]; then
+        rm -rf "${_AEGIS_LOCK_PATH}" 2>/dev/null || true
+    fi
+    return 0
+}
+
+_aegis_lock_reclaim_if_stale() {
+    local lock_dir=$1 pid
+    pid="$(cat "${lock_dir}/pid" 2>/dev/null || true)"
+    if _aegis_lock_pid_alive "$pid"; then
+        return 1
+    fi
+    # Dead or absent holder. Re-confirm RIGHT BEFORE reclaiming: a holder that
+    # appeared in the last instants keeps its lock; a genuinely dead one loses
+    # it. A live holder is never dispossessed.
+    sleep 0.1 2>/dev/null || true
+    pid="$(cat "${lock_dir}/pid" 2>/dev/null || true)"
+    if _aegis_lock_pid_alive "$pid"; then
+        return 1
+    fi
+    if [[ -z "$pid" ]]; then
+        # No readable PID at all: a holder that died between mkdir and the pid
+        # write, or an old broken lock. Young unreadable locks are refused
+        # rather than guessed; past the stale ceiling they are reclaimed.
+        local created now
+        created="$(cat "${lock_dir}/created" 2>/dev/null || true)"
+        now="$(date +%s)"
+        if [[ ! "$created" =~ ^[0-9]+$ || $(( now - created )) -lt "$AEGIS_LOCK_STALE_SECONDS" ]]; then
+            return 1
+        fi
+    fi
+    # Reclaim atomically: rename the stale directory out of the way first.
+    # rename(2) is atomic, so two processes that both just decided "stale"
+    # cannot both win — without this, the gap between the liveness re-check
+    # above and an unconditional `rm -rf` let one reclaimer delete the OTHER's
+    # freshly created, live lock and both proceed.
+    local doomed="${lock_dir}.reclaimed.$$"
+    if ! mv "$lock_dir" "$doomed" 2>/dev/null; then
+        return 1   # another reclaimer won the race; the caller retries mkdir
+    fi
+    rm -rf "$doomed" 2>/dev/null || true
+    log "took over a stale lock (dead PID ${pid:-<none>}) at ${lock_dir}"
+    return 0
+}
+
+_aegis_lock_acquire() {
+    # Already held by THIS command chain? update runs install (in a subshell)
+    # and hands over to a re-invoked/exec'd CLI, and update's start step runs
+    # `aegis up` as a child; those descendants carry the holder's PID in the
+    # environment and must never fight the ancestor that already holds the
+    # lock. If the recorded holder is gone, the chain is dead and the lock is
+    # taken fresh below.
+    if [[ "${AEGIS_LOCK_HELD:-}" == "1" ]] && _aegis_lock_pid_alive "${AEGIS_LOCK_PID:-}"; then
+        if [[ "${AEGIS_LOCK_MODE:-}" == "flock" ]]; then
+            # exec(1) normally keeps the lock fd, but verify rather than
+            # assume: if the advisory lock has actually been lost, take it
+            # again here; if it still exists, the chain holds it — nothing to
+            # do either way.
+            local retook=0
+            if exec 8>>"$AEGIS_LOCK_FILE"; then
+                if flock -n 8 2>/dev/null; then
+                    retook=1
+                else
+                    { exec 8>&- ; } 2>/dev/null || true
+                fi
+            fi
+            if (( retook )); then
+                _AEGIS_LOCK_ACQUIRED=1
+                _AEGIS_LOCK_FD=8
+                _AEGIS_LOCK_PATH="$AEGIS_LOCK_FILE"
+                export AEGIS_LOCK_HELD=1 AEGIS_LOCK_PID=$$ AEGIS_LOCK_MODE
+                _aegis_lock_arm_traps
+            fi
+            return 0
+        fi
+        if [[ "$(cat "${AEGIS_LOCK_FILE}.d/pid" 2>/dev/null || true)" == "${AEGIS_LOCK_PID:-}" ]]; then
+            return 0   # the mkdir lock still records this chain's PID
+        fi
+        # Not ours any more: fall through and take it fresh — which refuses if
+        # whoever holds it is alive.
+    fi
+
+    local mode="${AEGIS_LOCK_MODE:-auto}"
+    [[ "$mode" == "auto" ]] && { command -v flock >/dev/null 2>&1 && mode=flock || mode=mkdir; }
+    # The RESOLVED mode is what the chain's descendants must see (update runs
+    # install in a subshell and execs/spawns the next CLI); exporting the raw
+    # "auto" made them re-resolve — and a fresh re-acquire would truncate the
+    # pid hint and refuse against the very ancestor that holds the lock.
+    AEGIS_LOCK_MODE="$mode"
+    export AEGIS_LOCK_MODE
+
+    local dir
+    dir="$(dirname "$AEGIS_LOCK_FILE")"
+    if ! mkdir -p "$dir" 2>/dev/null; then
+        err "cannot create the aegis lock directory ${dir} — refusing to run without it."
+        exit 1
+    fi
+
+    local waited=0
+    while :; do
+        if [[ "$mode" == "flock" ]]; then
+            # Append, never truncate: a contender that loses the race must
+            # still be able to read the holder's PID for its refusal message.
+            if exec 9>>"$AEGIS_LOCK_FILE"; then
+                if flock -n 9 2>/dev/null; then
+                    _AEGIS_LOCK_ACQUIRED=1
+                    _AEGIS_LOCK_FD=9
+                    _AEGIS_LOCK_PATH="$AEGIS_LOCK_FILE"
+                    # We hold the lock now, so truncating the hint is safe.
+                    printf '%s\n' "$$" > "$AEGIS_LOCK_FILE" 2>/dev/null || true
+                    export AEGIS_LOCK_HELD=1 AEGIS_LOCK_PID=$$ AEGIS_LOCK_MODE
+                    _aegis_lock_arm_traps
+                    return 0
+                fi
+                { exec 9>&- ; } 2>/dev/null || true
+            else
+                err "cannot create the aegis lock file ${AEGIS_LOCK_FILE} — refusing to run without it."
+                exit 1
+            fi
+        else
+            local lock_dir="${AEGIS_LOCK_FILE}.d"
+            if mkdir "$lock_dir" 2>/dev/null; then
+                _AEGIS_LOCK_ACQUIRED=1
+                _AEGIS_LOCK_PATH="$lock_dir"
+                printf '%s\n' "$$" > "${lock_dir}/pid" 2>/dev/null || true
+                date +%s > "${lock_dir}/created" 2>/dev/null || true
+                export AEGIS_LOCK_HELD=1 AEGIS_LOCK_PID=$$ AEGIS_LOCK_MODE
+                _aegis_lock_arm_traps
+                return 0
+            fi
+            if _aegis_lock_reclaim_if_stale "$lock_dir"; then
+                continue   # reclaimed: retry the mkdir immediately
+            fi
+        fi
+        # Contended by a live holder: an optional SHORT bounded wait (its
+        # length is stated in the refusal message), then fail loudly.
+        if (( waited < AEGIS_LOCK_WAIT_SECONDS )); then
+            sleep 1
+            waited=$(( waited + 1 ))
+            continue
+        fi
+        local holder
+        if [[ "$mode" == "flock" ]]; then
+            holder="$(head -n 1 "$AEGIS_LOCK_FILE" 2>/dev/null || true)"
+        else
+            holder="$(cat "${AEGIS_LOCK_FILE}.d/pid" 2>/dev/null || true)"
+        fi
+        [[ "$mode" == "flock" ]] && _AEGIS_LOCK_PATH="$AEGIS_LOCK_FILE" || _AEGIS_LOCK_PATH="${AEGIS_LOCK_FILE}.d"
+        _aegis_lock_refuse "$holder" "$waited"
+    done
+}
+
 # --- progress renderer (begin) -----------------------------------------------
 # Feature real-progress-bars (odd/tasks/real-progress-bars.md). Steps print to
 # stdout like log(): "N/M <name>" and "✓ Step N complete". The LIVE parts (bar
@@ -1164,24 +1417,41 @@ pg_run_counted() {
     return "$rc"
 }
 
+# S3 (network bounds), and WHY each number is what it is:
+#   --connect-timeout: a dead host or a black-holed route dies at the TCP
+#     handshake — seconds, not minutes. 15s is generous for any reachable host
+#     and applies to every curl below.
+#   --speed-limit/--speed-time: the STALL bound, deliberately not a fixed
+#     --max-time: a multi-GB image on a slow line is a healthy transfer and
+#     must continue, but a connection that goes silent (NAT timeout, wifi
+#     drop) dies once it has moved less than AEGIS_CURL_STALL_BYTES in
+#     AEGIS_CURL_STALL_SECONDS — about a minute of silence by default.
+#   --max-time (small requests only): the size probe and the latest-release
+#     lookup are metadata round-trips; 30s is far past any healthy answer.
+AEGIS_CURL_CONNECT_TIMEOUT="${AEGIS_CURL_CONNECT_TIMEOUT:-15}"
+AEGIS_CURL_STALL_SECONDS="${AEGIS_CURL_STALL_SECONDS:-60}"
+AEGIS_CURL_STALL_BYTES="${AEGIS_CURL_STALL_BYTES:-1024}"
+_AEGIS_CURL_STALL_ARGS=(--connect-timeout "$AEGIS_CURL_CONNECT_TIMEOUT" --speed-limit "$AEGIS_CURL_STALL_BYTES" --speed-time "$AEGIS_CURL_STALL_SECONDS")
+AEGIS_CURL_SMALL_MAX_TIME="${AEGIS_CURL_SMALL_MAX_TIME:-30}"
+
 # pg_download <url> <out>: curl with a byte bar. The total is the server's
 # Content-Length (HEAD with redirects followed; the last response wins);
 # without one the bar shows the bytes received only. Returns curl's status.
 pg_download() {
     local url=$1 out=$2
     if ! _pg_live; then
-        curl -fsSL --output "$out" "$url"
+        curl -fsSL "${_AEGIS_CURL_STALL_ARGS[@]}" --output "$out" "$url"
         return
     fi
     local total size=0 pid rc=0
-    total="$(curl -fsSIL "$url" 2>/dev/null | tr -d '\r' \
+    total="$(curl -fsSIL --connect-timeout "$AEGIS_CURL_CONNECT_TIMEOUT" --max-time "$AEGIS_CURL_SMALL_MAX_TIME" "$url" 2>/dev/null | tr -d '\r' \
         | awk 'tolower($1) == "content-length:" { n = $2 } END { print n + 0 }' || true)"
     [[ "$total" =~ ^[0-9]+$ ]] || total=0
     # The rate and ETA are measured from the start of THIS download, not of
     # the step (a step can do other work first, or download twice).
     _PG_T0="$(_pg_now_ms)"
     _PG_LAST_MS=0
-    curl -fsSL --output "$out" "$url" &
+    curl -fsSL "${_AEGIS_CURL_STALL_ARGS[@]}" --output "$out" "$url" &
     pid=$!
     while kill -0 "$pid" 2>/dev/null; do
         [[ -f "$out" ]] && size="$(wc -c < "$out" | tr -d '[:space:]')"
@@ -1439,6 +1709,31 @@ compose() {
     AEGIS_CODE_BIND_ID="$(code_bind_id)" \
     AEGIS_REPO_BIND_ID="$(repo_bind_id)" \
         docker compose "${compose_files[@]}" "$@"
+}
+
+# S2 (bounded waits): every `docker compose up -d --wait` goes through here.
+# Unbounded, a wait could sit forever on a container that never becomes
+# healthy (a crash-looping service, a bad healthcheck). A stack that has not
+# converged in a few minutes is broken, not slow — so every wait carries
+# --wait-timeout, overridable with AEGIS_COMPOSE_WAIT_TIMEOUT for a stack
+# that is legitimately slow. On expiry compose exits non-zero; the elapsed-
+# time check below is what tells a timeout apart from any other compose
+# failure, and the message names the log instead of leaving the caller to
+# guess where the compose output went.
+AEGIS_COMPOSE_WAIT_TIMEOUT="${AEGIS_COMPOSE_WAIT_TIMEOUT:-300}"
+
+compose_wait_up() {
+    # compose_wait_up <compose-fn> <log-path> [compose args after `up -d --wait`]
+    local compose_fn=$1 log_path=$2; shift 2
+    mkdir -p "$(dirname "$log_path")"
+    local rc=0 started=$SECONDS
+    # --wait-timeout LAST, after any service names: `compose -f … up -d --wait
+    # --no-build dev dbports` stays the recorded argv shape it always was.
+    "$compose_fn" up -d --wait "$@" --wait-timeout "$AEGIS_COMPOSE_WAIT_TIMEOUT" >>"$log_path" 2>&1 || rc=$?
+    if (( rc != 0 )) && (( SECONDS - started >= AEGIS_COMPOSE_WAIT_TIMEOUT )); then
+        err "the stack did not become healthy within ${AEGIS_COMPOSE_WAIT_TIMEOUT}s (compose --wait-timeout; raise it with AEGIS_COMPOSE_WAIT_TIMEOUT if this stack is legitimately slow); full log: $log_path"
+    fi
+    return "$rc"
 }
 
 # Sandbox sibling of require_compose_file() above (T1/T5). Kept separate so the
@@ -1950,6 +2245,12 @@ pull_and_verify_published_image() {
 cmd_up() {
     [[ $# -eq 0 ]] || { err "usage: aegis up"; exit 2; }
 
+    # S1 (launcher-lock): ONE advisory process lock, held for the whole
+    # command. Taken here — not in main's dispatch — so `shell`/`herdr`
+    # auto-starting the stack through ensure_up takes it exactly once. See the
+    # launcher-lock block above for the mechanism and the release paths.
+    _aegis_lock_acquire
+
     # T3: never start on top of a sealed vault (see the helper above).
     require_vault_if_code_dir_is_a_bind || exit 1
 
@@ -2089,7 +2390,7 @@ cmd_up() {
     # `resolve_dev_image` and the build context come after the pull, so an env
     # image that had to be removed would have left both earlier passes deferring.
     require_engine_sees_code_bind || exit 1
-    compose up -d --wait --no-build >>"$up_log" 2>&1 || up_rc=$?
+    compose_wait_up compose "$up_log" --no-build || up_rc=$?
     pg_watch_stop
     if [[ "$up_rc" -ne 0 ]]; then
         err "the container did not come up; last lines:"
@@ -2325,7 +2626,9 @@ cmd_sandbox() {
     # T10: never execute a compose that lives inside the repo about to be mounted.
     _sandbox_assert_compose_outside_repo "$repo_abs" || exit 1
     log "sandbox: project ${SANDBOX_PROJECT} (repo ${repo_abs})"
-    sandbox_compose up -d --wait --build
+    # S2: bounded like every other wait; compose's own output goes to a log
+    # (tailed into the timeout/generic failure message) instead of streaming.
+    compose_wait_up sandbox_compose "${BUILD_LOG_DIR%/}/sandbox-up-$(date -u +%Y%m%dT%H%M%SZ).log" --build
 
     local container
     container="$(sandbox_compose ps -q "$SANDBOX_SERVICE")"
@@ -2890,7 +3193,7 @@ _allow_apply_extra_hosts() {
     log "recreando dev y dbports para aplicar la lista de bases de datos — esto corta tu sesión activa (reabrila al terminar; tus archivos no se pierden, es el mismo volumen)."
     local recreate_rc=0
     pg_watch_start services _pg_compose_counts dev dbports
-    compose up -d --wait --no-build dev dbports >"${BUILD_LOG_DIR%/}/dbports-$(date -u +%Y%m%dT%H%M%SZ).log" 2>&1 || recreate_rc=$?
+    compose_wait_up compose "${BUILD_LOG_DIR%/}/dbports-$(date -u +%Y%m%dT%H%M%SZ).log" --no-build dev dbports || recreate_rc=$?
     pg_watch_stop
     if [[ "$recreate_rc" -eq 0 ]]; then
         log "dev y dbports recreados."
@@ -6370,7 +6673,7 @@ _client_fetch_install_bundle() {
     if [[ -z "$expected" ]]; then
         local hashfile
         hashfile="$(mktemp)" || { err "mktemp failed"; return 1; }
-        if ! curl -fsSL "${url}.sha256" -o "$hashfile"; then
+        if ! curl -fsSL "${_AEGIS_CURL_STALL_ARGS[@]}" "${url}.sha256" -o "$hashfile"; then
             rm -f "$hashfile"
             err "could not fetch the bundle checksum: ${url}.sha256"
             err "set AEGIS_INSTALL_SHA256 to verify ${url}."
@@ -6545,6 +6848,11 @@ _version_lt() {
 }
 
 cmd_install() {
+    # S1 (launcher-lock): one advisory process lock for the whole command (see
+    # the launcher-lock block above). update calls cmd_install in a subshell;
+    # that descendant sees AEGIS_LOCK_HELD and does not take it again.
+    _aegis_lock_acquire
+
     # Client-redesign L4.2: the complete first journey. Unlicensed, a leading
     # license-id activates FIRST (nothing is installed before the machine has
     # a valid license — "without a license it brings nothing").
@@ -6642,7 +6950,13 @@ cmd_install() {
     # runs. Those are credentials, not a previous install: a machine that
     # activated first is still fresh, and must get the all-off manifest
     # (otherwise its first `add tool` silently turns gh AND az on).
-    other_state="$(ls -A "${aegis_home}" 2>/dev/null | grep -vxE 'license|device\.json' || true)"
+    # Exact-name exclusion (-x -F): the lock basename is user-configurable and
+    # must match literally, not as a regex — an ERE would treat its dot as "any
+    # character" and a metacharacter in AEGIS_LOCK_FILE would turn the whole
+    # grep into a swallowed error, which reads as "empty home" and would make
+    # an install look fresh.
+    other_state="$(ls -A "${aegis_home}" 2>/dev/null \
+        | grep -vxF -e "license" -e "device.json" -e "${AEGIS_LOCK_FILE##*/}" -e "${AEGIS_LOCK_FILE##*/}.d" || true)"
     if [[ -z "$other_state" && ! -e "$AEGIS_ENV_FILE" ]]; then
         fresh=1
     fi
@@ -8019,7 +8333,7 @@ env_rebuild_and_apply() {
     local stack_log="${logdir}/stack-$(date -u +%Y%m%dT%H%M%SZ).log"
     local stack_rc=0
     pg_watch_start services _pg_compose_counts dev
-    compose up -d --wait --no-build dev >>"$stack_log" 2>&1 || stack_rc=$?
+    compose_wait_up compose "$stack_log" --no-build dev || stack_rc=$?
     pg_watch_stop
     if [[ "$stack_rc" -ne 0 ]]; then
         err "the container did not come up; last lines:"
@@ -9158,7 +9472,7 @@ _fetch_cli_release() {
     bundle="${staging}/aegis-cli.tar.gz.cosign.bundle"
 
     if [[ -z "$tag" ]]; then
-        tag="$(curl -fsSL "https://api.github.com/repos/${AEGIS_CLI_REPO}/releases/latest" \
+        tag="$(curl -fsSL --connect-timeout "$AEGIS_CURL_CONNECT_TIMEOUT" --max-time "$AEGIS_CURL_SMALL_MAX_TIME" "https://api.github.com/repos/${AEGIS_CLI_REPO}/releases/latest" \
             | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
         if [[ -z "$tag" ]]; then
             err "could not resolve the latest aegis-cli release"
@@ -9351,6 +9665,11 @@ cmd_update_client() {
                 ;;
         esac
     done
+
+    # S1 (launcher-lock): one advisory process lock for the whole command. The
+    # handoff exec and the `aegis up` child below carry AEGIS_LOCK_HELD, so
+    # the continuation never fights this invocation for the lock.
+    _aegis_lock_acquire
 
     # The log is always written (a failure points at it); --verbose only
     # echoes it as well.
@@ -9914,6 +10233,11 @@ _telemetry_emit() {
 _telemetry_on_exit() {
     local rc=$?
     set +e +u
+    # S1 (launcher-lock): the launcher lock, if this invocation took one, is
+    # released here — the ONE EXIT trap is the only place cleanup survives
+    # every exit path (the signal handlers above only release and exit; this
+    # trap runs for them too, and _aegis_lock_release is idempotent).
+    _aegis_lock_release
     # OD1.2: client install fetches into a temp dir; this is the one EXIT trap,
     # so the cleanup lives here rather than in a second trap that would replace
     # this one (and the telemetry report with it).
