@@ -7403,7 +7403,7 @@ env_rebuild_and_apply() {
         tail -n 20 "$stack_log" | sed 's/^/  /' >&2
         exit 1
     fi
-    log "container recreated, proxy reloaded"
+    log "$(_compose_apply_claim "$(_compose_apply_class "$stack_log")")"
 
     summarize_rebuild "$started_at"
 }
@@ -7413,6 +7413,41 @@ env_rebuild_and_apply() {
 # aegis-build-view.js only decides HOW the build's output is shown and keeps the
 # complete log in BUILD_LOG_DIR. `--verbose` (or AEGIS_BUILD_VERBOSE=1) streams
 # the raw log as before.
+
+# _compose_apply_class <compose log>: classifies what `compose up -d --wait
+# dev` actually did to the dev container, from the compose output captured in
+# $1. The same file later receives the egress-proxy restart output, so lines
+# naming another container never decide, and only the dev container's own
+# lines count (its compose name ends in the service name + index: dev-1,
+# dev_1). Prints recreated | running | unknown; the caller never invents a
+# claim from "unknown".
+_compose_apply_class() {
+    local log_file="$1" dev_lines
+    if [[ ! -f "$log_file" ]]; then
+        printf 'unknown'
+        return
+    fi
+    dev_lines="$(grep -E 'dev[-_][0-9]+' "$log_file" 2>/dev/null)" || true
+    if [[ -n "$dev_lines" ]] && grep -qiE 'recreated|created|started|starting' <<<"$dev_lines"; then
+        printf 'recreated'
+    elif [[ -n "$dev_lines" ]] && grep -qiE 'running|up-to-date' <<<"$dev_lines"; then
+        printf 'running'
+    else
+        printf 'unknown'
+    fi
+}
+
+# _compose_apply_claim <class>: the rebuild log line, built ONLY from what
+# compose reported. A no-op apply (container already running unchanged) must
+# not claim "recreated"; an unrecognisable log keeps the previous wording
+# rather than inventing a new one.
+_compose_apply_claim() {
+    case "$1" in
+        recreated) printf 'container recreated, proxy reloaded' ;;
+        running)   printf 'container already running unchanged, proxy reloaded' ;;
+        *)         printf 'container recreated, proxy reloaded' ;;
+    esac
+}
 
 build_log_path() {
     printf '%s/build-%s.log\n' "${BUILD_LOG_DIR%/}" "$(date -u +%Y%m%dT%H%M%SZ)"
@@ -8666,6 +8701,24 @@ _client_update_state_file() {
     printf '%s' "${AEGIS_INSTALL_DIR%/}.update-previous"
 }
 
+# _update_cleanup_line <removed> <reason>: renders the cleanup line of the
+# `aegis update` summary from what the run ACTUALLY did. $1 is the number of
+# images really removed; $2 says why nothing was queued for removal
+# ("same-version" | "no-stale-images") and is read only when $1 is 0. With
+# images removed it keeps the success check; with none it states plainly that
+# there was nothing to clean, because a ✓ over an empty to_remove list claims
+# work the run never did (same truth class as the warm-pull fix, 78e28c8).
+_update_cleanup_line() {
+    local removed="$1" reason="$2"
+    if (( removed > 0 )); then
+        printf '  ✓ Previous images cleaned up\n'
+    elif [[ "$reason" == "same-version" ]]; then
+        printf '  - Nothing to clean up: same version, no stale images\n'
+    else
+        printf '  - Nothing to clean up: no stale images\n'
+    fi
+}
+
 cmd_update_client() {
     local verbose=0
     while [[ $# -gt 0 ]]; do
@@ -8856,7 +8909,17 @@ cmd_update_client() {
     printf '  ✓ Configuration installed\n'
     printf '  ✓ CLI updated\n'
     printf '  ✓ Base image verified and running\n'
-    printf '  ✓ Previous images cleaned up\n'
+    if (( removed > 0 )); then
+        _update_cleanup_line "$removed" ""
+    elif [[ "$old_tag" == "$new_tag" ]]; then
+        # Nothing was queued: the run resolved to the same version, so there
+        # was never anything to remove.
+        _update_cleanup_line 0 "same-version"
+    else
+        # to_remove is empty here, so nothing stale was found against the new
+        # version even though the version moved.
+        _update_cleanup_line 0 "no-stale-images"
+    fi
     printf '  ✓ All data preserved\n'
     printf '\n'
 
