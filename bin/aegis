@@ -1217,11 +1217,12 @@ pg_watch_stop() {
 }
 
 # _pg_pull_counts <docker pull log>: "<layers done> <layers known>", counted
-# over layers that TRANSFER this run. 'Already exists' is a layer that moved
-# no bytes, so it counts in neither number (S1): a warm pull cannot look like
-# progress toward a download. The total grows as docker announces each layer
-# it intends to fetch ('Pulling fs layer'), so it is what docker has promised,
-# never a guess; 'Pull complete' is a layer that arrived.
+# over the layers that TRANSFER this run. A layer that answers 'Already
+# exists' moved no bytes, so it goes into neither number (aegis-cli#65): a
+# warm pull must not look like progress toward a download. The total grows as
+# docker announces each layer it intends to fetch ('Pulling fs layer'), so it
+# is what docker has promised, never a guess; 'Pull complete' is a layer that
+# arrived.
 _pg_pull_counts() {
     local log=$1 known=0 done_=0
     if [[ -f "$log" ]]; then
@@ -3676,15 +3677,16 @@ secret_edit_editor_ready() {
 # sixty minutes into ~/.docker/config.json, where it would outlive its usefulness in a file nobody
 # thinks to clean.
 # _pull_final_line <pull log> <elapsed seconds>: the one curated line a
-# successful pull prints, shared by every caller of cmd_image_pull (S4) —
-# the same wording for `aegis up`, `aegis install` and the update's rebuild.
-# Docker's own final status marker is authoritative (S3): 'Image is up to
-# date' means nothing moved, whatever the layer lines say; 'Downloaded newer
-# image' means a download, whatever the counts say. Without a marker (older
-# docker, interrupted log) the transferred-layer count decides. The warm case
-# never claims a download or a byte count; it names the outcome — the ref was
-# already named by the 'pulling <reference>' line above — and verification
-# still runs afterwards in every real call path, unconditionally.
+# successful pull prints, shared by every caller of cmd_image_pull — the same
+# wording for `aegis up`, `aegis image pull` and the update's rebuild (ported
+# from aegis-cli 7e8bef5, aegis-cli#65). Docker's own final status marker is
+# authoritative: 'Image is up to date' means nothing moved, whatever the
+# layer lines say; 'Downloaded newer image' means a download, whatever the
+# counts say. Without a marker (older docker, interrupted log) the
+# transferred-layer count decides. The warm case never claims a download or a
+# byte count; it names the outcome — the reference was already named by the
+# 'pulling <reference>' line above — and the cosign verification still runs
+# afterwards in every real call path, unconditionally.
 _pull_final_line() {
     local log=$1 elapsed=$2 status layers outcome noun
     layers="$(grep -cE ': Pull complete$' "$log" 2>/dev/null || true)"
@@ -8042,18 +8044,22 @@ env_rebuild_and_apply() {
 
 # _compose_apply_class <compose log>: classifies what `compose up -d --wait
 # dev` actually did to the dev container, from the compose output captured in
-# $1. The same file later receives the egress-proxy restart output, so lines
-# naming another container never decide, and only the dev container's own
-# lines count (its compose name ends in the service name + index: dev-1,
-# dev_1). Prints recreated | running | unknown; the caller never invents a
-# claim from "unknown".
+# $1 (ported from aegis-cli 7e8bef5, aegis-cli#65). The same file later
+# receives the egress-proxy restart output, so lines naming another container
+# never decide, and only the dev container's own lines count. Two name shapes
+# match here: compose's own service-index form (dev-1, dev_1) and this
+# template's fixed container_name ($DEV_CONTAINER, docker-compose.yml) — the
+# latter anchored on a word end, because the devports/dbports sidecars are
+# named aegis-workstation-dev* and a bare prefix would let THEM answer.
+# Prints recreated | running | unknown; the caller never invents a claim from
+# "unknown".
 _compose_apply_class() {
     local log_file="$1" dev_lines
     if [[ ! -f "$log_file" ]]; then
         printf 'unknown'
         return
     fi
-    dev_lines="$(grep -E 'dev[-_][0-9]+' "$log_file" 2>/dev/null)" || true
+    dev_lines="$(grep -E "dev[-_][0-9]+|${DEV_CONTAINER}([[:space:]]|\$)" "$log_file" 2>/dev/null)" || true
     if [[ -n "$dev_lines" ]] && grep -qiE 'recreated|created|started|starting' <<<"$dev_lines"; then
         printf 'recreated'
     elif [[ -n "$dev_lines" ]] && grep -qiE 'running|up-to-date' <<<"$dev_lines"; then
@@ -9308,12 +9314,13 @@ _client_update_state_file() {
 }
 
 # _update_cleanup_line <removed> <reason>: renders the cleanup line of the
-# `aegis update` summary from what the run ACTUALLY did. $1 is the number of
-# images really removed; $2 says why nothing was queued for removal
-# ("same-version" | "no-stale-images") and is read only when $1 is 0. With
-# images removed it keeps the success check; with none it states plainly that
-# there was nothing to clean, because a ✓ over an empty to_remove list claims
-# work the run never did (same truth class as the warm-pull fix, 78e28c8).
+# `aegis update` summary from what the run ACTUALLY did (ported from
+# aegis-cli 7e8bef5, aegis-cli#65). $1 is the number of images really
+# removed; $2 says why nothing was queued for removal ("same-version" |
+# "no-stale-images") and is read only when $1 is 0. With images removed it
+# keeps the success check; with none it states plainly that there was nothing
+# to clean, because a ✓ over an empty to_remove list claims work the run
+# never did — the same truth class as the pull that never downloaded.
 _update_cleanup_line() {
     local removed="$1" reason="$2"
     if (( removed > 0 )); then
